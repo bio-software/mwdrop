@@ -167,7 +167,23 @@ The script exits immediately on error and writes a failure message to the log wi
 
 ## Acknowledgments
 
-This project reuses code from **MobyWat** http://www.mobywat.com.
+This project builds on **MobyWat** http://www.mobywat.com.
+
+## License
+
+Copyright (C) 2026 SovietSpy2
+
+MWDROP is free software: you can redistribute it and/or modify it under the terms of the
+GNU General Public License as published by the Free Software Foundation, either version 3
+of the License, or (at your option) any later version. It is distributed in the hope that
+it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See [LICENSE](LICENSE) for the full
+text of the GNU General Public License.
+
+The installer downloads and builds two GPL-licensed programs that keep their own licenses:
+MobyWat, Copyright (C) 2015, 2016 Csaba Hetenyi, PhD (GNU GPL version 3 or later), and
+[wdrop](https://github.com/bio-software/wdrop), which is derived from MobyWat and is
+likewise distributed under the GNU GPL version 3 or later.
 
 
 
