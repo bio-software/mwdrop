@@ -2,9 +2,9 @@
 set -euo pipefail
 
 ################################################################################
-# WDROP Test Suite - Sequential Test Runner
+# MWDROP Test Suite - Sequential Test Runner
 #
-# This script runs wdrop.sh multiple times sequentially with different modes and
+# This script runs mwdrop.sh multiple times sequentially with different modes and
 # configurations to stress-test the pipeline.
 #
 # Usage: ./test.sh [OPTIONS]
@@ -30,8 +30,8 @@ set -euo pipefail
 ################################################################################
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-readonly SCRIPT="$PROJECT_ROOT/pipeline/wdrop.sh"
+readonly PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+readonly SCRIPT="$PROJECT_ROOT/pipeline/mwdrop.sh"
 
 # Default values
 PDB_URL="http://files.rcsb.org/download/1PSV.pdb"
@@ -159,7 +159,7 @@ check_prerequisites() {
   log_msg INFO "Checking prerequisites..."
 
   if [[ ! -f "$SCRIPT" ]]; then
-    log_msg ERROR "wdrop.sh not found at: $SCRIPT"
+    log_msg ERROR "mwdrop.sh not found at: $SCRIPT"
     exit 1
   fi
 
@@ -296,7 +296,7 @@ run_single_test_body() {
     fi
   fi
 
-  log_msg INFO "Test #${test_num}: PDB(s) downloaded, starting wdrop.sh"
+  log_msg INFO "Test #${test_num}: PDB(s) downloaded, starting mwdrop.sh"
 
   local test_start
   test_start=$(date +%s)
@@ -421,7 +421,7 @@ collect_results() {
 
 print_test_configuration() {
   log_msg INFO "======================================"
-  log_msg INFO "WDROP Test Suite - Sequential Runner"
+  log_msg INFO "MWDROP Test Suite - Sequential Runner"
   log_msg INFO "======================================"
   log_msg INFO "Configuration:"
   log_msg INFO "  PDB URL: $PDB_URL"

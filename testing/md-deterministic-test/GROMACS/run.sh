@@ -56,7 +56,7 @@ validate_common_args
 awk -v D="$MD_NS" 'BEGIN { exit !(D+0 > 0) }' || die "--md-ns must be greater than 0 for the MD suite (got '$MD_NS')"
 
 command -v gmx   >/dev/null 2>&1 || die "'gmx' not found in PATH"
-command -v wdrop >/dev/null 2>&1 || die "'wdrop' not found in PATH (run 'cd src && make install')"
+command -v wdrop >/dev/null 2>&1 || die "'wdrop' not found in PATH (run 'installer/install.sh')"
 
 export GMX_MAXBACKUP=-1
 

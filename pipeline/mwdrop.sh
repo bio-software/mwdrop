@@ -1,17 +1,17 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "__          _______  _____   ____  _____  "
-echo "\ \        / /  __ \|  __ \ / __ \|  __ \ "
-echo " \ \  /\  / /| |  | | |__) | |  | | |__) |"
-echo "  \ \/  \/ / | |  | |  _  /| |  | |  ___/ "
-echo "   \  /\  /  | |__| | | \ \| |__| | |     "
-echo "    \/  \/   |_____/|_|  \_\\____/|_|     "
+echo " __  __ __          _______  _____   ____  _____  "
+echo "|  \/  |\ \        / /  __ \|  __ \ / __ \|  __ \ "
+echo "| \  / | \ \  /\  / /| |  | | |__) | |  | | |__) |"
+echo "| |\/| |  \ \/  \/ / | |  | |  _  /| |  | |  ___/ "
+echo "| |  | |   \  /\  /  | |__| | | \ \| |__| | |     "
+echo "|_|  |_|    \/  \/   |_____/|_|  \_\\____/|_|     "
 
-# Usage: ./wdrop.sh INPUT_PDB MODE [REFERENCE_PDB] [--layers L] [--intermediate-md-ns NS] [--final-md-ns NS]
-# Example prediciton mode: ./wdrop.sh /abs/path/ASD.pdb gromacs --layers 5
-# Example validation mode: ./wdrop.sh /abs/path/ASD.pdb gromacs /abs/path/ASD_crsyst.pdb --layers 5
-# Example per-layer MD:    ./wdrop.sh /abs/path/ASD.pdb tinker --intermediate-md-ns 0.1 --final-md-ns 0.5
+# Usage: ./mwdrop.sh INPUT_PDB MODE [REFERENCE_PDB] [--layers L] [--intermediate-md-ns NS] [--final-md-ns NS]
+# Example prediciton mode: ./mwdrop.sh /abs/path/ASD.pdb gromacs --layers 5
+# Example validation mode: ./mwdrop.sh /abs/path/ASD.pdb gromacs /abs/path/ASD_crsyst.pdb --layers 5
+# Example per-layer MD:    ./mwdrop.sh /abs/path/ASD.pdb tinker --intermediate-md-ns 0.1 --final-md-ns 0.5
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/pipeline_common.sh"
@@ -199,7 +199,7 @@ readonly OUTPUT_TAG="_l${LAYERS}_int${INTERMEDIATE_MD_NS}_fin${FINAL_MD_NS}"
 
 setup_logging "$LOGFILE"
 
-log "Starting wdrop pipeline"
+log "Starting mwdrop pipeline"
 log "INPUT_PDB=$INPUT_PDB"
 log "MODE=$MODE"
 log "LAYERS=$LAYERS (one layer per iteration -> $ITERATIONS iterations)"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Canonicalize a PDB file for the WDROP pipeline.
+"""Canonicalize a PDB file for the MWDROP pipeline.
 
 Rewrites a PDB in place to:
   1. Remove rows that start with CONECT.

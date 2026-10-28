@@ -1,6 +1,6 @@
-# WDROP Installer
+# MWDROP Installer
 
-This installer bootstraps the local environment required to run the WDROP toolchain. It checks for required commands and Python components, runs component-specific installer scripts for anything missing, and verifies the final installation state before exiting.
+This installer bootstraps the local environment required to run the MWDROP pipeline. It checks for required commands and Python components, runs component-specific installer scripts for anything missing, and verifies the final installation state before exiting.
 
 ## What it installs
 
@@ -69,7 +69,7 @@ Before running the installer, make sure:
 ## Example output
 
 ```text
-WDROP INSTALLER
+MWDROP INSTALLER
 
 Checking required programs...
 

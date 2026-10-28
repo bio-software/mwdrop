@@ -1,4 +1,8 @@
-# WDROP - Water Droplet-based Molecular Dynamics Pipeline via MobyWat
+# MWDROP - Water Droplet-based Molecular Dynamics Pipeline via MobyWat
+
+MWDROP (MobyWat + WDROP) is the pipeline that drives the
+[wdrop](https://github.com/bio-software/wdrop) water placement program, GROMACS/Tinker
+minimization and MD, and MobyWat validation.
 
 ## Software components
 
@@ -6,7 +10,7 @@ The pipeline ties together a C binary, Bash orchestration, a Python virtual
 environment, and external MM/MD engines. Every box below must be available:
 
 ```text
-   wdrop.sh   (Bash orchestrator; sources pipeline_common.sh)
+   mwdrop.sh   (Bash orchestrator; sources pipeline_common.sh)
       |
       |   loops L iterations (one water layer each):  deposit water  -->  minimize
       |   with --intermediate-md-ns > 0 each iteration also runs a short MD;
@@ -28,8 +32,8 @@ environment, and external MM/MD engines. Every box below must be available:
 
 | Component | Role | Provided by |
 | --- | --- | --- |
-| `wdrop.sh` + `pipeline_common.sh` | Pipeline orchestration (Bash) | this repo (`pipeline/`) |
-| `wdrop` | Places HOH water layers on the protein surface | this repo (`src/`, C binary) |
+| `mwdrop.sh` + `pipeline_common.sh` | Pipeline orchestration (Bash) | this repo (`pipeline/`) |
+| `wdrop` | Places HOH water layers on the protein surface | [bio-software/wdrop](https://github.com/bio-software/wdrop) (C binary, built by the installer) |
 | C compiler + `make` | Builds the `wdrop` binary | system toolchain |
 | `pdb-preprocessor.py` | Fixes/reduces the input PDB | this repo, needs Python venv |
 | Python venv (`.venv`) + `pdbfixer` | PDB fixing dependency | auto-created by the pipeline |
@@ -38,46 +42,47 @@ environment, and external MM/MD engines. Every box below must be available:
 | Tinker9-GPU (`dynamic9`) | GPU-accelerated MD (optional, `TINKER_GPU=1`) | external install |
 | `mobywat` | Water prediction/validation on the final iteration | external install |
 
-## Compile
-- `cd src` and then `make`
-
 ## Install
-- `make install`
+- `cd installer && ./install.sh`
+
+The installer checks for every component above and installs the missing ones. `wdrop` is cloned from
+[bio-software/wdrop](https://github.com/bio-software/wdrop), compiled and installed into `~/bin`; set
+`WDROP_REF` to build a specific branch, tag or commit (see `installer/README.MD`).
 
 ## Pipeline scripts
 
 The project includes user-facing pipeline script in `pipeline/`:
 
-# wdrop.sh
+# mwdrop.sh
 
-`wdrop.sh` is a Bash pipeline wrapper for running `wdrop` and molecular mechanics minimization on a PDB file. It deposits water layers around the protein one layer at a time and relaxes the structure over a deposit-and-minimize iteration per layer, controlled by the `--layers`, `--intermediate-md-ns`, and `--final-md-ns` flags.
+`mwdrop.sh` is a Bash pipeline wrapper for running `wdrop` and molecular mechanics minimization on a PDB file. It deposits water layers around the protein one layer at a time and relaxes the structure over a deposit-and-minimize iteration per layer, controlled by the `--layers`, `--intermediate-md-ns`, and `--final-md-ns` flags.
 
 ## Usage
 
 ```bash
-./wdrop.sh <INPUT_PDB> <MODE> [REFERENCE_PDB] [--layers L] [--intermediate-md-ns NS] [--final-md-ns NS]
+./mwdrop.sh <INPUT_PDB> <MODE> [REFERENCE_PDB] [--layers L] [--intermediate-md-ns NS] [--final-md-ns NS]
 ```
 
 Examples:
 
 ```bash
 # Default: 5 layers, one deposited+minimized per iteration; MD + MobyWat only on the last
-./wdrop.sh /tmp/working_dir/1PSV.pdb gromacs
+./mwdrop.sh /tmp/working_dir/1PSV.pdb gromacs
 ```
 
 ```bash
 # Refine after every layer: a short MD (0.1 ns) runs each intermediate iteration, the final iteration runs 0.5 ns + MobyWat
-./wdrop.sh /tmp/working_dir/1PSV.pdb tinker --intermediate-md-ns 0.1 --final-md-ns 0.5
+./mwdrop.sh /tmp/working_dir/1PSV.pdb tinker --intermediate-md-ns 0.1 --final-md-ns 0.5
 ```
 
 ```bash
 # No intermediate MD (the default): only the last iteration runs MD (0.5 ns) + MobyWat
-./wdrop.sh /tmp/working_dir/1PSV.pdb tinker --intermediate-md-ns 0 --final-md-ns 0.5
+./mwdrop.sh /tmp/working_dir/1PSV.pdb tinker --intermediate-md-ns 0 --final-md-ns 0.5
 ```
 
 ```bash
 # Validation mode with a reference PDB (waters already present)
-./wdrop.sh /tmp/working_dir/1PSV.pdb gromacs /tmp/working_dir/1PSV_cryst.pdb --layers 5
+./mwdrop.sh /tmp/working_dir/1PSV.pdb gromacs /tmp/working_dir/1PSV_cryst.pdb --layers 5
 ```
 
 Note: Place the input PDB in its own working directory located outside the project folder. The working directory should contain only that PDB file.

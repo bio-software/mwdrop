@@ -8,12 +8,12 @@ RUN apt-get update && \
 
 WORKDIR /opt
 
-RUN git clone https://github.com/sovietspy2/water-coating-pass.git
+RUN git clone https://github.com/bio-software/mwdrop.git
 
-WORKDIR /opt/water-coating-pass
+WORKDIR /opt/mwdrop
 
-RUN chmod +x installer/install.sh testing/test.sh && \
+RUN chmod +x installer/install.sh testing/load-test/test.sh && \
     cd installer && \
     ./install.sh
 
-CMD ["/bin/bash", "-lc", "mkdir -p /data/test_runs && cd /opt/water-coating-pass/testing && ./test.sh -p /data/test_runs"]
+CMD ["/bin/bash", "-lc", "mkdir -p /data/test_runs && cd /opt/mwdrop/testing/load-test && ./test.sh -p /data/test_runs"]

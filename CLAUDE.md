@@ -4,18 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project is
 
-WDROP is a molecular dynamics preprocessing pipeline. The C program (`wdrop`) places water molecule oxygens (HOH) around a protein surface using a PASS-like sphere coating algorithm, then the pipeline scripts drive molecular mechanics (MM) and molecular dynamics (MD) minimization using GROMACS or Tinker as backends.
+MWDROP (MobyWat + WDROP) is a molecular dynamics preprocessing pipeline. The external C program `wdrop` places water molecule oxygens (HOH) around a protein surface, then the pipeline scripts drive molecular mechanics (MM) and molecular dynamics (MD) minimization using GROMACS or Tinker as backends, and MobyWat for validation.
 
-## Build
+**Naming:** `mwdrop` is the pipeline (this repo, entry point `pipeline/mwdrop.sh`); `wdrop` is the C binary it calls. Keep that distinction when naming things — e.g. `run_wdrop_and_mm` and `WDROP_OUTPUT` in `mwdrop.sh` refer to the binary.
 
-```bash
-cd src && make          # produces src/wdrop
-make install            # copies wdrop to ~/bin
-```
+## The wdrop dependency
 
-CI runs `make` from `src/` on every push/PR (`.github/workflows/c-cpp.yml`).
-
-## Running wdrop directly
+`wdrop` is developed in its own repository, https://github.com/bio-software/wdrop (sources, algorithm docs, its own determinism test). This repo contains no C code. `installer/wdrop/install.sh` clones it, runs `make` and `make install` (→ `~/bin/wdrop`); `WDROP_REF` selects the branch/tag/commit (default `master`). The pipeline only needs `wdrop` on `PATH`:
 
 ```bash
 wdrop --file <input.pdb> --sigma <float> --weed-dist <float> --layers <int>
@@ -26,7 +21,7 @@ Output is written as `<input_base>_<N>WAT.pdb` in the same directory as the inpu
 ## Running the full pipeline
 
 ```bash
-./pipeline/wdrop.sh <INPUT_PDB> <MODE> [REFERENCE_PDB] [--layers L] [--intermediate-md-ns NS] [--final-md-ns NS]
+./pipeline/mwdrop.sh <INPUT_PDB> <MODE> [REFERENCE_PDB] [--layers L] [--intermediate-md-ns NS] [--final-md-ns NS]
 # MODE: gromacs | tinker
 # --layers L: number of water layers (default 5); one layer is deposited+minimized per iteration, so L is also the iteration count
 # --intermediate-md-ns NS: MD length in ns run after each intermediate iteration (default 0); 0 = no intermediate MD (minimize only)
@@ -46,12 +41,9 @@ The input PDB **must be in its own working directory** outside the project folde
 Tests live in per-purpose subdirectories under `testing/`:
 
 ```bash
-# Load/integration test (downloads a real PDB from RCSB, runs wdrop.sh repeatedly):
+# Load/integration test (downloads a real PDB from RCSB, runs mwdrop.sh repeatedly):
 ./testing/load-test/test.sh [OPTIONS]
 # -m gromacs|tinker|all   -t 1|5|all   -n <count>   -p <path>   -l (loop forever)
-
-# Determinism test (verifies the C program output is bit-identical across N runs):
-./testing/algo-deterministic-test/wdrop_deterministic_test.sh [-n <runs>]
 
 # Engine determinism suites — how much do repeated identical runs differ?
 ./testing/minimize-deterministic-test/run.sh [-e gromacs|tinker|all] [-n N] [--arms pipeline|hardened|all]
@@ -107,25 +99,14 @@ Bootstraps: Python 3, pdbfixer (in `.venv`), GROMACS, Tinker, wdrop, MobyWat. Id
 
 ## Code architecture
 
-### C program (`src/`)
-
-- **`macros.h`** — all compile-time constants and helper print macros. PDB field widths, default tolerances, program name strings.
-- **`global.h`** — all PDB-related structs: `ap` (atom), `tp` (topology), `pd` (pairwise distance), `hs`/`hd` (hydrogen-bond network edge/node), `re`/`pl`/`pf` (pool/occupancy lists), `wr`/`mr` (water matching). Struct fields reflect the PDB column layout.
-- **`input.c`/`input.h`** — `read_in_pdb()` parses PDB files into `ap[]` arrays; `parse_program_args()` handles CLI flags (`--file`, `--sigma`, `--weed-dist`, `--layers`) into `WdropProgramOptions`.
-- **`wdrop.c`/`wdrop.h`** — core algorithm. `three_point_sphere_geometry()` computes candidate water positions from every triple of nearby atom spheres; `pass_like_coating()` iterates over atom triples, filters clashes, and appends accepted HOH atoms. Uses a linked-list spatial grid for neighbor lookup. `sigma_from_atom()` maps element symbols to van-der-Waals radii.
-- **`print.c`/`print.h`** — PDB file output and per-run log entry.
-- **`main.c`** — entry point: parse args → read PDB → `pass_like_coating()` → write output PDB + log.
-
-Global state lives in `main.c` as `g_`-prefixed variables (e.g. `g_pdb_ref`, `g_ref_name`). The structs in `global.h` carry extra fields inherited from MobyWat that are not used by `wdrop` itself.
-
 ### Pipeline scripts (`pipeline/`)
 
 - **`pipeline_common.sh`** — sourced by all pipeline scripts. Provides `log()`, `run_step()`, `setup_logging()`, `normalize_input_pdb()`, `make_output_dir()`, `validate_script_dir_not_input_dir()`, `run_mm_step()`, plus the MobyWat target-selection helpers `protein_chain_ids()`, `mobywat_target_spec()` (see "MobyWat target selection" below).
-- **`wdrop.sh`** — orchestrates the per-layer deposit+minimize loop (`--layers` iterations, one layer each): model reduction → PDB fix (Python) → iterative wdrop + MM/MD → file collection. `--intermediate-md-ns` sets the intermediate MD length (`0` = none, the default) and `--final-md-ns` the final one; the output-dir name encodes both (`_l<L>_int<INT>_fin<FIN>`).
+- **`mwdrop.sh`** — orchestrates the per-layer deposit+minimize loop (`--layers` iterations, one layer each): model reduction → PDB fix (Python) → iterative wdrop + MM/MD → file collection. `--intermediate-md-ns` sets the intermediate MD length (`0` = none, the default) and `--final-md-ns` the final one; the output-dir name encodes both (`_l<L>_int<INT>_fin<FIN>`).
 - **`gromacs.sh`** / **`tinker.sh`** — backend-specific MM+MD steps; write `next_step.pdb` on success. `tinker.sh` supports Tinker9-GPU: export `TINKER_GPU=1` to run the MD step with `dynamic9` instead of `dynamic` (file-format utilities `pdbxyz`/`arcedit`/`xyzpdb` are unchanged); GPU mode also injects `INTEGRATOR VERLET` + `REMOVE-INERTIA 0` into `md.key`. Both backends also honor `MOBYWAT_DEBUG=1`, which runs an extra MobyWat pass in Analysis mode (`-m Analysis`) after the Prediction one; Analysis mode needs a reference structure, so it is skipped in prediction-only runs. It writes the per-frame success rates to `O_system_succ.txt` at Silent verbosity, leaving the Prediction outputs (`O_system_mt*.lst`, `O_system_rmst.txt`) untouched.
-- **`pdb-preprocessor.py`** — fixes missing residues/atoms and nonstandard residues in X-ray PDBs (uses pdbfixer). Mode is selected by a required flag: `--target` strips all waters and heterogens (used by `wdrop.sh`); `--reference` keeps waters but removes other heterogens (used by `gromacs.sh`/`tinker.sh` for MobyWat validation).
+- **`pdb-preprocessor.py`** — fixes missing residues/atoms and nonstandard residues in X-ray PDBs (uses pdbfixer). Mode is selected by a required flag: `--target` strips all waters and heterogens (used by `mwdrop.sh`); `--reference` keeps waters but removes other heterogens (used by `gromacs.sh`/`tinker.sh` for MobyWat validation).
 - **`format_pdb.py`** — rewrites a PDB into canonical fixed-width columns (removes CONECT, renames OW→O, maps residue names 001/002/SOL→WAT), backing the original up to `<stem>.original.pdb`. Called by both backends before/after MD. Its coordinate parser anchors decimals to exactly 3 fractional digits (`%8.3f`), so it correctly reads touching fixed-width fields (GROMACS pseudo-PBC coords ~5000 Å) and widened/stuck fields (Tinker `xyzpdb` `%9.3f` frames) alike. Per-row change detail in the rewrite log is capped at `_DETAIL_LOG_CAP` (1000 rows) so multi-thousand-frame trajectories don't produce huge logs; summary counts remain exact. Tests in `testing/format-pdb-test/`.
-- **`research.sh`** — batch benchmark + CSV history generator. Takes `<INPUT_DIR> <OUTPUT_DIR>`, and for every `.pdb` in the input dir runs each combo in its `COMBOS` array, each in its own working dir. Each `COMBOS` entry is a full `wdrop.sh` invocation — the engine (`tinker`|`gromacs`) followed by any `wdrop.sh` flags (`--layers`, `--intermediate-md-ns`, `--final-md-ns`); omitted flags fall back to `wdrop.sh` defaults. The combo string is slugged into a unique per-combo working dir, and the analysis dir is derived from the resolved `--layers`/`--intermediate-md-ns`/`--final-md-ns` (mirroring wdrop.sh's `_l<L>_int<INT>_fin<FIN>` tag). Each run appends **one row per PDB × combo** to an **append-only, committed CSV history** — `testing/research_history.csv` by default, overridable via the `RESEARCH_CSV` env var. The file is never truncated (it's the long-term performance record for later DB import); the header is written only when the file is missing/empty. Columns: `id` (auto-increment across runs), `pdb_name`, `engine`, `layers`, `intermediate_md_ns`, `final_md_ns`, `total_runtime_seconds`, `rmsd_avg`/`rmsd_max`, `sr_mer`/`sr_ida`/`sr_ide`/`sr_pos`, `sr_frame_min`/`sr_frame_max`/`sr_frame_avg`/`sr_frame_std`, `failure` (`1` when any of the six result metrics is empty = no usable result, else `0`), `run_timestamp` (ISO 8601 UTC), `commit_hash`, and `cpu`/`gpu` (from the `CPU`/`GPU` env vars, `UNKNOWN` when unset). The `sr_frame_*` columns summarize the **per-frame** success rates in `O_system_succ.txt` (min, max, mean, population standard deviation) — that file is only written by MobyWat's Analysis mode, so `research.sh` exports `MOBYWAT_DEBUG=1` by default (set `MOBYWAT_DEBUG=0` to opt out, leaving the four columns empty). They are deliberately not part of the `failure` test, which keeps its original six-metric meaning across the whole history. `total_runtime_seconds` **excludes** the `MOBYWAT_DEBUG` Analysis pass: each backend logs `MobyWat Analysis runtime: N seconds` and `append_csv_row()` subtracts it from `wdrop.sh`'s `Total runtime was` figure, so the column reflects pipeline work rather than the diagnostic extra (rows recorded before this change still include it). Missing metrics are left empty. Downloads nothing (files are provided/reviewed manually); honors `TINKER_GPU=1`.
+- **`research.sh`** — batch benchmark + CSV history generator. Takes `<INPUT_DIR> <OUTPUT_DIR>`, and for every `.pdb` in the input dir runs each combo in its `COMBOS` array, each in its own working dir. Each `COMBOS` entry is a full `mwdrop.sh` invocation — the engine (`tinker`|`gromacs`) followed by any `mwdrop.sh` flags (`--layers`, `--intermediate-md-ns`, `--final-md-ns`); omitted flags fall back to `mwdrop.sh` defaults. The combo string is slugged into a unique per-combo working dir, and the analysis dir is derived from the resolved `--layers`/`--intermediate-md-ns`/`--final-md-ns` (mirroring mwdrop.sh's `_l<L>_int<INT>_fin<FIN>` tag). Each run appends **one row per PDB × combo** to an **append-only, committed CSV history** — `testing/research_history.csv` by default, overridable via the `RESEARCH_CSV` env var. The file is never truncated (it's the long-term performance record for later DB import); the header is written only when the file is missing/empty. Columns: `id` (auto-increment across runs), `pdb_name`, `engine`, `layers`, `intermediate_md_ns`, `final_md_ns`, `total_runtime_seconds`, `rmsd_avg`/`rmsd_max`, `sr_mer`/`sr_ida`/`sr_ide`/`sr_pos`, `sr_frame_min`/`sr_frame_max`/`sr_frame_avg`/`sr_frame_std`, `failure` (`1` when any of the six result metrics is empty = no usable result, else `0`), `run_timestamp` (ISO 8601 UTC), `commit_hash`, and `cpu`/`gpu` (from the `CPU`/`GPU` env vars, `UNKNOWN` when unset). The `sr_frame_*` columns summarize the **per-frame** success rates in `O_system_succ.txt` (min, max, mean, population standard deviation) — that file is only written by MobyWat's Analysis mode, so `research.sh` exports `MOBYWAT_DEBUG=1` by default (set `MOBYWAT_DEBUG=0` to opt out, leaving the four columns empty). They are deliberately not part of the `failure` test, which keeps its original six-metric meaning across the whole history. `total_runtime_seconds` **excludes** the `MOBYWAT_DEBUG` Analysis pass: each backend logs `MobyWat Analysis runtime: N seconds` and `append_csv_row()` subtracts it from `mwdrop.sh`'s `Total runtime was` figure, so the column reflects pipeline work rather than the diagnostic extra (rows recorded before this change still include it). Missing metrics are left empty. Downloads nothing (files are provided/reviewed manually); honors `TINKER_GPU=1`.
 - **`add-mobywat-analysis-params.sh`** / **`remove-ter-id.sh`** — small helpers for the reference PDB: the first prepends MobyWat `REMARK mobywat_*` tuning params, taking the target spec as an optional `$2` (`add-mobywat-analysis-params.sh <pdb> [AB]`, default `[A]`) which it writes into `REMARK mobywat_reference_target`; the second normalizes `TER` records and renumbers atoms.
 
 ### MobyWat target selection (chain IDs)

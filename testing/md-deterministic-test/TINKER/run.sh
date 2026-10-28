@@ -90,7 +90,7 @@ fi
 
 command -v minimize >/dev/null 2>&1 || die "Tinker 'minimize' not found in PATH"
 command -v pdbxyz   >/dev/null 2>&1 || die "Tinker 'pdbxyz' not found in PATH"
-command -v wdrop    >/dev/null 2>&1 || die "'wdrop' not found in PATH (run 'cd src && make install')"
+command -v wdrop    >/dev/null 2>&1 || die "'wdrop' not found in PATH (run 'installer/install.sh')"
 
 require_input_pdb
 setup_work_dir

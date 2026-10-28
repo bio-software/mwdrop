@@ -1,11 +1,11 @@
 #!/bin/bash
 # ============================================================================
-# research.sh — batch benchmark + CSV history generator for the WDROP pipeline.
+# research.sh — batch benchmark + CSV history generator for the MWDROP pipeline.
 #
 # Processes every .pdb file found in an input directory (the files are provided
 # and reviewed manually — this script does NOT download anything). For each PDB
-# it runs every combo listed in COMBOS below. Each combo is a full wdrop.sh
-# invocation: the engine (tinker|gromacs) followed by any wdrop.sh flags, e.g.
+# it runs every combo listed in COMBOS below. Each combo is a full mwdrop.sh
+# invocation: the engine (tinker|gromacs) followed by any mwdrop.sh flags, e.g.
 #   tinker --layers 5 --intermediate-md-ns 0.1 --final-md-ns 0.5
 # Edit COMBOS to define the runs you want.
 # Each combo runs in its OWN working directory (the _l{L}_int{INT}_fin{FIN} output
@@ -81,9 +81,9 @@ for f in "$INPUT_DIR"/*.pdb; do
 done
 [[ ${#PDB_FILES[@]} -gt 0 ]] || { echo "Error: no .pdb files found in $INPUT_DIR" >&2; exit 1; }
 
-# The combinations to run. Each entry is a full wdrop.sh command line: the engine
-# (tinker|gromacs) followed by any wdrop.sh flags (--layers, --intermediate-md-ns,
-# --final-md-ns). Flags left out fall back to wdrop.sh defaults (--layers 5,
+# The combinations to run. Each entry is a full mwdrop.sh command line: the engine
+# (tinker|gromacs) followed by any mwdrop.sh flags (--layers, --intermediate-md-ns,
+# --final-md-ns). Flags left out fall back to mwdrop.sh defaults (--layers 5,
 # --intermediate-md-ns 0 = no intermediate MD, --final-md-ns 0.1). Intermediate MD
 # runs iff --intermediate-md-ns > 0. The input/reference PDBs are added
 # automatically per combo; do NOT list them here.
@@ -128,8 +128,8 @@ combo_slug() {
   printf '%s' "$1" | tr -cs '[:alnum:]' '_' | sed 's/^_*//; s/_*$//'
 }
 
-# Extract the effective value of a wdrop.sh flag from a combo's arg list, honoring
-# both "--flag value" and "--flag=value" forms. Falls back to $2 (the wdrop.sh
+# Extract the effective value of a mwdrop.sh flag from a combo's arg list, honoring
+# both "--flag value" and "--flag=value" forms. Falls back to $2 (the mwdrop.sh
 # default) when the flag is absent.
 #   $1 flag name (e.g. --layers)   $2 default   $3.. the combo args
 combo_flag() {
@@ -310,17 +310,17 @@ for SRC_PDB in "${PDB_FILES[@]}"; do
   cp "$SRC_PDB" "$ORIGINAL"
 
   for COMBO in "${COMBOS[@]}"; do
-    # Split the combo into its tokens: engine + wdrop.sh flags.
+    # Split the combo into its tokens: engine + mwdrop.sh flags.
     read -ra COMBO_TOKENS <<< "$COMBO"
     [[ ${#COMBO_TOKENS[@]} -ge 1 ]] || { log "Skipping empty combo entry"; continue; }
     ENGINE="${COMBO_TOKENS[0]}"
-    WDROP_ARGS=("${COMBO_TOKENS[@]:1}") # everything after the engine
+    MWDROP_ARGS=("${COMBO_TOKENS[@]:1}") # everything after the engine
 
-    # Derive the effective params (mirroring wdrop.sh defaults) — used both to
+    # Derive the effective params (mirroring mwdrop.sh defaults) — used both to
     # locate the output dir and to record them in the CSV row.
-    LAYERS="$(combo_flag --layers 5 "${WDROP_ARGS[@]}")"
-    INTERMEDIATE_MD_NS="$(combo_flag --intermediate-md-ns 0 "${WDROP_ARGS[@]}")"
-    FINAL_MD_NS="$(combo_flag --final-md-ns 0.1 "${WDROP_ARGS[@]}")"
+    LAYERS="$(combo_flag --layers 5 "${MWDROP_ARGS[@]}")"
+    INTERMEDIATE_MD_NS="$(combo_flag --intermediate-md-ns 0 "${MWDROP_ARGS[@]}")"
+    FINAL_MD_NS="$(combo_flag --final-md-ns 0.1 "${MWDROP_ARGS[@]}")"
 
     # Unique working dir per combo (the params can coincide across combos), so slug
     # the whole combo string.
@@ -328,13 +328,13 @@ for SRC_PDB in "${PDB_FILES[@]}"; do
     WORK="$PDB_ROOT/$SLUG"
     mkdir -p "$WORK"
 
-    # Fresh copy of the pristine master for this combo (wdrop.sh mutates its
+    # Fresh copy of the pristine master for this combo (mwdrop.sh mutates its
     # input in place, so nothing can be shared between combos).
     cp "$ORIGINAL" "$WORK/$PDBID.pdb"
     cp "$ORIGINAL" "$WORK/${PDBID}_r.pdb"
 
-    # Analysis dir: wdrop.sh writes to <PDB>_l{LAYERS}_int{INT}_fin{FIN}/ (must mirror
-    # wdrop.sh's OUTPUT_TAG exactly). One layer is deposited per iteration, so the
+    # Analysis dir: mwdrop.sh writes to <PDB>_l{LAYERS}_int{INT}_fin{FIN}/ (must mirror
+    # mwdrop.sh's OUTPUT_TAG exactly). One layer is deposited per iteration, so the
     # final iteration lands in the numbered subdir {LAYERS} — except a single-layer
     # run, which has no numbered subdir.
     OUTPUT_TAG="_l${LAYERS}_int${INTERMEDIATE_MD_NS}_fin${FINAL_MD_NS}"
@@ -347,8 +347,8 @@ for SRC_PDB in "${PDB_FILES[@]}"; do
     # TINKER_GPU is inherited from the caller's environment (set it manually
     # before running this script to enable Tinker9 GPU mode).
     log "Running $PDBID: $COMBO ..."
-    if ( cd "$WORK" && "$SCRIPT_DIR/wdrop.sh" \
-           "$PDBID.pdb" "$ENGINE" "${PDBID}_r.pdb" "${WDROP_ARGS[@]}" ); then
+    if ( cd "$WORK" && "$SCRIPT_DIR/mwdrop.sh" \
+           "$PDBID.pdb" "$ENGINE" "${PDBID}_r.pdb" "${MWDROP_ARGS[@]}" ); then
       log "DONE: $PDBID $COMBO"
     else
       log "WARNING: $PDBID '$COMBO' failed (rc=$?); recording partial results."

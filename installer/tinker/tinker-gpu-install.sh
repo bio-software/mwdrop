@@ -114,7 +114,7 @@ echo "==> Initializing submodules (CPU Tinker source is required)"
 git -C "$REPO_DIR" submodule update --init --recursive
 
 # Patch out the test subdirectory — its Catch2 submodule doesn't compile on GCC 13+
-# and the tests are not needed for the wdrop pipeline executables.
+# and the tests are not needed for the mwdrop pipeline executables.
 sed -i 's/^add_subdirectory (test)/# add_subdirectory (test)  # disabled: Catch2 GCC13 incompatibility/' \
   "$REPO_DIR/CMakeLists.txt"
 
@@ -260,6 +260,6 @@ echo "  ~/bin/minimize9: $(command -v minimize9 2>/dev/null || echo not-found)"
 echo "  ~/bin/dynamic9:  $(command -v dynamic9  2>/dev/null || echo not-found)"
 echo "  ~/bin/analyze9:  $(command -v analyze9  2>/dev/null || echo not-found)"
 echo
-echo "To use GPU-accelerated Tinker in the wdrop pipeline:"
+echo "To use GPU-accelerated Tinker in the mwdrop pipeline:"
 echo "  export TINKER_GPU=1"
-echo "  ./pipeline/wdrop.sh input.pdb tinker SHORT"
+echo "  ./pipeline/mwdrop.sh input.pdb tinker"

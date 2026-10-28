@@ -156,7 +156,7 @@ verify_input_pdb_untouched() {
 }
 
 setup_work_dir() {
-  WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/wdrop-determinism.XXXXXX")"
+  WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mwdrop-determinism.XXXXXX")"
   log "Work directory: $WORK_DIR"
 }
 

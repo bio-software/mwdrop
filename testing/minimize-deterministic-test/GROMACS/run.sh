@@ -50,7 +50,7 @@ done
 validate_common_args
 
 command -v gmx   >/dev/null 2>&1 || die "'gmx' not found in PATH"
-command -v wdrop >/dev/null 2>&1 || die "'wdrop' not found in PATH (run 'cd src && make install')"
+command -v wdrop >/dev/null 2>&1 || die "'wdrop' not found in PATH (run 'installer/install.sh')"
 
 # Keep gmx from littering #backup# files; each replicate already gets a clean dir.
 export GMX_MAXBACKUP=-1

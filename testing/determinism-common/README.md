@@ -36,7 +36,7 @@ wdrop --file fixture.pdb --sigma 1.8 --weed-dist 3.5 --layers 1
 pipeline/format_pdb.py fixture_1WAT.pdb              # canonical columns, OW->O, SOL->WAT
 ```
 
-`wdrop` is deterministic (`testing/algo-deterministic-test/`), so building the fixture
+`wdrop` is deterministic (see `testing/algo-deterministic-test/` in [bio-software/wdrop](https://github.com/bio-software/wdrop)), so building the fixture
 once and sharing it is what keeps the measured variance attributable to the engine.
 
 The input PDB is never written to. Its sha256 is recorded before the run and checked
