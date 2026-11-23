@@ -79,6 +79,11 @@ else
     log "TINKER_GPU is not set: using standard Tinker CPU commands (dynamic)"
 fi
 
+# MobyWat match tolerance (-mtol, Å): max reference-to-predicted oxygen distance
+# that counts as a match. 1.5 is MobyWat's own default (manual Table 3.1).
+MOBYWAT_MTOL="${MOBYWAT_MTOL:-1.5}"
+log "MOBYWAT_MTOL=$MOBYWAT_MTOL"
+
 case "${MOBYWAT_DEBUG:-0}" in
     ''|0|false|no|off) MOBYWAT_DEBUG_ENABLED=false ;;
     *)                 MOBYWAT_DEBUG_ENABLED=true ;;
@@ -318,11 +323,11 @@ else
   log "MobyWat target: trajectory $MOBYWAT_TARGET (prediction only)"
 fi
 
-run_step mobywat "${MOBYWAT_ARGS[@]}" -t "$MOBYWAT_TARGET" -w Auto -n "1-$MOBYWAT_FRAMES" -cls MER -m Prediction -v Diagnostic
+run_step mobywat "${MOBYWAT_ARGS[@]}" -t "$MOBYWAT_TARGET" -w Auto -n "1-$MOBYWAT_FRAMES" -mtol "$MOBYWAT_MTOL" -cls MER -m Prediction -v Diagnostic
 
 if [[ "$MOBYWAT_DEBUG_ENABLED" == true && -n "${REFERENCE_PDB:-}" ]]; then
     MOBYWAT_ANALYSIS_T0=$SECONDS
-    if ! run_step mobywat "${MOBYWAT_ARGS[@]}" -t "$MOBYWAT_TARGET" -w Auto -n "1-$MOBYWAT_FRAMES" -m Analysis; then
+    if ! run_step mobywat "${MOBYWAT_ARGS[@]}" -t "$MOBYWAT_TARGET" -w Auto -n "1-$MOBYWAT_FRAMES" -mtol "$MOBYWAT_MTOL" -m Analysis; then
         log "WARNING: MobyWat Analysis failed; research.sh's sr_frame_* columns will be empty."
     fi
     log "MobyWat Analysis runtime: $(( SECONDS - MOBYWAT_ANALYSIS_T0 )) seconds"

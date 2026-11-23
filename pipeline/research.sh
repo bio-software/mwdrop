@@ -20,7 +20,8 @@
 #   id, pdb_name, engine, layers, intermediate_md_ns, final_md_ns,
 #   total_runtime_seconds, rmsd_avg, rmsd_max, sr_mer, sr_ida, sr_ide, sr_pos,
 #   sr_frame_min, sr_frame_max, sr_frame_avg, sr_frame_std,
-#   failure, run_timestamp, commit_hash, cpu, gpu
+#   failure, run_timestamp, commit_hash, cpu, gpu,
+#   matches_mer, matches_ida, matches_ide, matches_pos, sr_denominator
 # Metrics come from: total runtime (last "Total runtime was N seconds" line of
 # application.LOG), avg/max C-alpha RMSD from O_system_rmst.txt, and the final SR
 # value from each O_system_mt{MER,IDa,IDe,POS}.lst. The sr_frame_* columns are the
@@ -31,6 +32,11 @@
 # failure is 1 when any of the six result metrics (rmsd_avg/rmsd_max + the four SR
 # values) is empty (no usable result), else 0. cpu/gpu come from the CPU/GPU env
 # vars (UNKNOWN when unset).
+# matches_* are the raw match counts behind each sr_* (rows flagged "x" in the same
+# O_system_mt*.lst) and sr_denominator is the reference pool size ("Waters below
+# B-factor limit" in O_system.log), so SR = 100 * matches / sr_denominator and SRs
+# can be pooled across systems as in Jeszenői et al. 2016, Eq. 1. Histories written
+# before these columns existed can be backfilled with pipeline/add_sr_counts.py.
 #
 # Usage:
 #   ./pipeline/research.sh <INPUT_DIR> <OUTPUT_DIR>
@@ -72,7 +78,7 @@ RESEARCH_CSV="${RESEARCH_CSV:-$SCRIPT_DIR/../testing/research_history.csv}"
 mkdir -p "$(dirname "$RESEARCH_CSV")"
 RESEARCH_CSV="$(cd "$(dirname "$RESEARCH_CSV")" && pwd)/$(basename "$RESEARCH_CSV")"
 
-CSV_HEADER="id,pdb_name,engine,layers,intermediate_md_ns,final_md_ns,total_runtime_seconds,rmsd_avg,rmsd_max,sr_mer,sr_ida,sr_ide,sr_pos,sr_frame_min,sr_frame_max,sr_frame_avg,sr_frame_std,failure,run_timestamp,commit_hash,cpu,gpu"
+CSV_HEADER="id,pdb_name,engine,layers,intermediate_md_ns,final_md_ns,total_runtime_seconds,rmsd_avg,rmsd_max,sr_mer,sr_ida,sr_ide,sr_pos,sr_frame_min,sr_frame_max,sr_frame_avg,sr_frame_std,failure,run_timestamp,commit_hash,cpu,gpu,matches_mer,matches_ida,matches_ide,matches_pos,sr_denominator"
 
 # Collect the .pdb files to process (top level of INPUT_DIR only).
 PDB_FILES=()
@@ -92,6 +98,14 @@ COMBOS=(
   "tinker --layers 5 --intermediate-md-ns 0 --final-md-ns 0.01"
 )
 
+# MobyWat match tolerance (-mtol, Å) used for every combo: a predicted water counts
+# as a match when it lies within this distance of a reference water, so it drives
+# all sr_* / matches_* / sr_frame_* columns. 1.5 is MobyWat's default; change it here
+# (or export MOBYWAT_MTOL) for e.g. a 1.0 Å run. The value is not a CSV column, so
+# write different tolerances to separate OUTPUT_DIR / RESEARCH_CSV targets.
+MOBYWAT_MTOL="${MOBYWAT_MTOL:-1.5}"
+export MOBYWAT_MTOL
+
 # Escape one CSV field (RFC 4180): wrap in double quotes and double any embedded
 # quotes, but ONLY when the value contains a comma, quote, or newline. Numbers and
 # enum-like tokens pass through untouched; free-text fields (cpu/gpu) are protected.
@@ -107,7 +121,15 @@ csv_field() {
 ensure_csv_header() {
   if [[ ! -s "$RESEARCH_CSV" ]]; then
     printf '%s\n' "$CSV_HEADER" >> "$RESEARCH_CSV"
-  elif [[ -n "$(tail -c1 "$RESEARCH_CSV")" ]]; then
+    return
+  fi
+  local existing_header
+  existing_header="$(head -n1 "$RESEARCH_CSV" | tr -d '\r')"
+  if [[ "$existing_header" != "$CSV_HEADER" ]]; then
+    log "WARNING: $RESEARCH_CSV header differs from the current column set; new rows will not line up."
+    log "WARNING: older histories can be upgraded with: pipeline/add_sr_counts.py <OUTPUT_DIR> $RESEARCH_CSV"
+  fi
+  if [[ -n "$(tail -c1 "$RESEARCH_CSV")" ]]; then
     printf '\n' >> "$RESEARCH_CSV"
     log "WARNING: $RESEARCH_CSV had no trailing newline; added one before appending"
   fi
@@ -152,6 +174,23 @@ sr_value() {
   local f="$1"
   [[ -f "$f" ]] || { printf ''; return; }
   awk '/^SR/{print $2}' "$f" | tail -1
+}
+
+# Number of matched waters in an O_system_mt*.lst file: rows whose last column "M"
+# is "x" (each reference water is matched at most once per list). Empty string when
+# the file is missing.
+match_count() {
+  local f="$1"
+  [[ -f "$f" ]] || { printf ''; return; }
+  grep -cE '\|[[:space:]]*x[[:space:]]*$' "$f" || true
+}
+
+# SR denominator: the reference pool MobyWat divides by ("Waters below B-factor
+# limit" in O_system.log, written by the Analysis pass). Empty when not present.
+sr_denominator() {
+  local f="$1"
+  [[ -f "$f" ]] || { printf ''; return; }
+  awk -F: '/Waters below B-factor limit/ {gsub(/[[:space:]]/, "", $2); v = $2} END {printf "%s", v}' "$f"
 }
 
 # Per-frame success-rate statistics from O_system_succ.txt (written by MobyWat
@@ -227,6 +266,14 @@ append_csv_row() {
   sr_ide="$(sr_value "$run_dir/O_system_mtIDe.lst")"
   sr_pos="$(sr_value "$run_dir/O_system_mtPOS.lst")"
 
+  # --- Raw counts behind the SRs (SR = 100 * matches / sr_denominator) -------
+  local matches_mer matches_ida matches_ide matches_pos sr_denom
+  matches_mer="$(match_count "$run_dir/O_system_mtMER.lst")"
+  matches_ida="$(match_count "$run_dir/O_system_mtIDa.lst")"
+  matches_ide="$(match_count "$run_dir/O_system_mtIDe.lst")"
+  matches_pos="$(match_count "$run_dir/O_system_mtPOS.lst")"
+  sr_denom="$(sr_denominator "$run_dir/O_system.log")"
+
   # --- Per-frame SR stats (MobyWat Analysis mode; empty when it did not run) --
   local sr_frame_min="" sr_frame_max="" sr_frame_avg="" sr_frame_std=""
   local succ
@@ -246,7 +293,7 @@ append_csv_row() {
   run_timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
   # Build the row through csv_field so free-text fields (cpu/gpu) stay well-formed.
-  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
     "$(csv_field "$CSV_NEXT_ID")" \
     "$(csv_field "$pdb_name")" \
     "$(csv_field "$engine")" \
@@ -269,6 +316,11 @@ append_csv_row() {
     "$(csv_field "$COMMIT_HASH")" \
     "$(csv_field "$CPU_INFO")" \
     "$(csv_field "$GPU_INFO")" \
+    "$(csv_field "$matches_mer")" \
+    "$(csv_field "$matches_ida")" \
+    "$(csv_field "$matches_ide")" \
+    "$(csv_field "$matches_pos")" \
+    "$(csv_field "$sr_denom")" \
     >> "$RESEARCH_CSV"
 
   (( CSV_NEXT_ID++ ))
@@ -293,6 +345,7 @@ log "Research run started. Input dir: $INPUT_DIR"
 log "Output dir: $OUTPUT_DIR"
 log "CSV history: $RESEARCH_CSV (starting at id $CSV_NEXT_ID)"
 log "commit=$COMMIT_HASH cpu=$CPU_INFO gpu=$GPU_INFO"
+log "MobyWat match tolerance (mtol): $MOBYWAT_MTOL A"
 log "PDB files to process: ${#PDB_FILES[@]}"
 
 # ----------------------------------------------------------------------------

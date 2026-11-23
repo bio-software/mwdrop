@@ -66,6 +66,11 @@ log "DT_PS=$DT_PS"
 touch "${INPUT_DIR}/GROMACS.protocol"
 log "Created GROMACS.protocol file"
 
+# MobyWat match tolerance (-mtol, Å): max reference-to-predicted oxygen distance
+# that counts as a match. 1.5 is MobyWat's own default (manual Table 3.1).
+MOBYWAT_MTOL="${MOBYWAT_MTOL:-1.5}"
+log "MOBYWAT_MTOL=$MOBYWAT_MTOL"
+
 case "${MOBYWAT_DEBUG:-0}" in
     ''|0|false|no|off) MOBYWAT_DEBUG_ENABLED=false ;;
     *)                 MOBYWAT_DEBUG_ENABLED=true ;;
@@ -391,11 +396,11 @@ EOF
   log "MobyWat target: trajectory $MOBYWAT_TARGET (prediction only)"
 fi
 
-run_step mobywat -t "$MOBYWAT_TARGET" -w Auto -n "1-$MOBYWAT_FRAMES" -m Prediction -cls MER -v Diagnostic
+run_step mobywat -t "$MOBYWAT_TARGET" -w Auto -n "1-$MOBYWAT_FRAMES" -mtol "$MOBYWAT_MTOL" -m Prediction -cls MER -v Diagnostic
 
 if [[ "$MOBYWAT_DEBUG_ENABLED" == true && -n "${REFERENCE_PDB:-}" ]]; then
         MOBYWAT_ANALYSIS_T0=$SECONDS
-        if ! run_step mobywat -t "$MOBYWAT_TARGET" -w Auto -n "1-$MOBYWAT_FRAMES" -m Analysis; then
+        if ! run_step mobywat -t "$MOBYWAT_TARGET" -w Auto -n "1-$MOBYWAT_FRAMES" -mtol "$MOBYWAT_MTOL" -m Analysis; then
                 log "WARNING: MobyWat Analysis failed; research.sh's sr_frame_* columns will be empty."
         fi
         log "MobyWat Analysis runtime: $(( SECONDS - MOBYWAT_ANALYSIS_T0 )) seconds"
