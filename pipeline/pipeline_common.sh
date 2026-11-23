@@ -104,24 +104,52 @@ should_run_mobywat() {
 # (target inside the reference). Both used to be hardcoded to [A], which silently
 # validated only the first chain of every multi-chain protein.
 
-# Sorted, unique chain IDs of the CA-bearing residues of a PDB, e.g. "AB".
-# CA-bearing is the set MobyWat counts for its RMSD, so waters and heterogens drop
-# out. Only the first MODEL is read, so multi-model trajectory PDBs work unchanged.
-protein_chain_ids() {
+# Sorted, unique chain IDs of the non-water atoms of a PDB, e.g. "AB". This is the
+# set MobyWat's chain mode selects (every non-water atom of the listed chains,
+# whatever the residue type), so proteins, DNA and RNA all resolve; the water names
+# are MobyWat's own (HOH/WAT/SOL/H2O). Heterogens are stripped by
+# pdb-preprocessor.py beforehand, so for a protein this is the same set as its
+# CA-bearing chains. Only the first MODEL is read, so multi-model trajectory PDBs
+# work unchanged.
+target_chain_ids() {
   awk '
     /^ENDMDL/ { exit }
-    /^(ATOM|HETATM)/ && substr($0, 13, 4) == " CA " {
+    /^(ATOM|HETATM)/ {
+      res = substr($0, 18, 3); gsub(/ /, "", res)
       id = substr($0, 22, 1)
-      if (id != " ") print id
+      if (res != "HOH" && res != "WAT" && res != "SOL" && res != "H2O" && id != " ") print id
     }' "$1" | sort -u | tr -d '\n'
 }
 
 # Target spec of a PDB, e.g. "[AB]". Derived per file: the trajectory and the
 # reference may spell their chains differently (MobyWat manual 3.1.5.2).
+# An empty spec would crash MobyWat, so it is a logged error (on stderr, because
+# callers capture stdout).
 mobywat_target_spec() {
   local ids
-  ids="$(protein_chain_ids "$1")"
-  [[ -n "$ids" ]] && printf '[%s]' "$ids"
+  ids="$(target_chain_ids "$1")"
+  if [[ -z "$ids" ]]; then
+    log "ERROR: no target chains (non-water atoms with a chain ID) found in $1" >&2
+    return 1
+  fi
+  printf '[%s]' "$ids"
+}
+
+# Atom name MobyWat should use for the target RMSD (O_system_rmst.txt), passed via
+# the MOBYWAT_RMS_ATOM environment variable (patched MobyWat, bio-software/MobyWat):
+# CA when the target has C-alphas (proteins and complexes), else C4' (DNA/RNA: one
+# per nucleotide, present at the 5' terminus where crystals often lack the
+# phosphate). Defaults to CA, which MobyWat reports as nan with a warning.
+mobywat_rms_atom() {
+  awk '
+    /^ENDMDL/ { exit }
+    /^(ATOM|HETATM)/ {
+      name = substr($0, 13, 4); gsub(/ /, "", name)
+      res = substr($0, 18, 3); gsub(/ /, "", res)
+      if (name == "CA" && res != "CA") ca = 1
+      if (name == "C4'"'"'") c4 = 1
+    }
+    END { print ((ca || !c4) ? "CA" : "C4'"'"'") }' "$1"
 }
 
 run_mm_step() {

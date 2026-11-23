@@ -23,7 +23,7 @@
 #   failure, run_timestamp, commit_hash, cpu, gpu,
 #   matches_mer, matches_ida, matches_ide, matches_pos, sr_denominator
 # Metrics come from: total runtime (last "Total runtime was N seconds" line of
-# application.LOG), avg/max C-alpha RMSD from O_system_rmst.txt, and the final SR
+# application.LOG), avg/max target RMSD (CA, or C4' for DNA/RNA) from O_system_rmst.txt, and the final SR
 # value from each O_system_mt{MER,IDa,IDe,POS}.lst. The sr_frame_* columns are the
 # min/max/mean/population-standard-deviation of the PER-FRAME success rates in
 # O_system_succ.txt, which only MobyWat's Analysis mode writes — this script turns
@@ -247,12 +247,15 @@ append_csv_row() {
     fi
   fi
 
-  # --- C-alpha RMSD avg / max (empty when no data) ------------------------
+  # --- Target RMSD avg / max (empty when no data) -------------------------
+  # Atom is MobyWat's MOBYWAT_RMS_ATOM: CA for proteins, C4' for DNA/RNA. Rows
+  # MobyWat could not compute are written as "nan"/"-nan"; they are skipped, so an
+  # all-nan file leaves both columns empty (-> failure=1) instead of storing "-nan".
   local rmsd_avg="" rmsd_max=""
   local rmst="$run_dir/O_system_rmst.txt"
   if [[ -f "$rmst" ]]; then
     local stats
-    stats="$(awk 'NR>1 {s+=$2; c++; if(c==1 || $2>m) m=$2} END{if(c) printf "%.3f %.3f", s/c, m}' "$rmst")"
+    stats="$(awk 'NR>1 && tolower($2) !~ /nan/ {s+=$2; c++; if(c==1 || $2>m) m=$2} END{if(c) printf "%.3f %.3f", s/c, m}' "$rmst")"
     if [[ -n "$stats" ]]; then
       rmsd_avg="${stats%% *}"
       rmsd_max="${stats##* }"

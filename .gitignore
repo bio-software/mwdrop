@@ -2,3 +2,5 @@
 /testing/minimize-deterministic-test/results/
 /.venv
 /testing/fast
+__pycache__/
+.pytest_cache/

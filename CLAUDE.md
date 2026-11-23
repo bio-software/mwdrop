@@ -101,7 +101,7 @@ Bootstraps: Python 3, pdbfixer (in `.venv`), GROMACS, Tinker, wdrop, MobyWat. Id
 
 ### Pipeline scripts (`pipeline/`)
 
-- **`pipeline_common.sh`** — sourced by all pipeline scripts. Provides `log()`, `run_step()`, `setup_logging()`, `normalize_input_pdb()`, `make_output_dir()`, `validate_script_dir_not_input_dir()`, `run_mm_step()`, plus the MobyWat target-selection helpers `protein_chain_ids()`, `mobywat_target_spec()` (see "MobyWat target selection" below).
+- **`pipeline_common.sh`** — sourced by all pipeline scripts. Provides `log()`, `run_step()`, `setup_logging()`, `normalize_input_pdb()`, `make_output_dir()`, `validate_script_dir_not_input_dir()`, `run_mm_step()`, plus the MobyWat helpers `target_chain_ids()`, `mobywat_target_spec()` and `mobywat_rms_atom()` (see "MobyWat target selection" and "Nucleic acids" below).
 - **`mwdrop.sh`** — orchestrates the per-layer deposit+minimize loop (`--layers` iterations, one layer each): model reduction → PDB fix (Python) → iterative wdrop + MM/MD → file collection. `--intermediate-md-ns` sets the intermediate MD length (`0` = none, the default) and `--final-md-ns` the final one; the output-dir name encodes both (`_l<L>_int<INT>_fin<FIN>`).
 - **`gromacs.sh`** / **`tinker.sh`** — backend-specific MM+MD steps; write `next_step.pdb` on success. `tinker.sh` supports Tinker9-GPU: export `TINKER_GPU=1` to run the MD step with `dynamic9` instead of `dynamic` (file-format utilities `pdbxyz`/`arcedit`/`xyzpdb` are unchanged); GPU mode also injects `INTEGRATOR VERLET` + `REMOVE-INERTIA 0` into `md.key`. Both backends also honor `MOBYWAT_DEBUG=1`, which runs an extra MobyWat pass in Analysis mode (`-m Analysis`) after the Prediction one; Analysis mode needs a reference structure, so it is skipped in prediction-only runs. It writes the per-frame success rates to `O_system_succ.txt` at Silent verbosity, leaving the Prediction outputs (`O_system_mt*.lst`, `O_system_rmst.txt`) untouched.
 - **`pdb-preprocessor.py`** — fixes missing residues/atoms and nonstandard residues in X-ray PDBs (uses pdbfixer). Mode is selected by a required flag: `--target` strips all waters and heterogens (used by `mwdrop.sh`); `--reference` keeps waters but removes other heterogens (used by `gromacs.sh`/`tinker.sh` for MobyWat validation).
@@ -120,14 +120,22 @@ MobyWat picks the target molecule by chain ID (`-t x-y/[xy...]`), and that selec
 
 All three used to be pinned to `[A]`, and `gromacs.sh` additionally ran `gmx editconf -label A`, which stamped chain `A` on *every* atom. On a multi-chain protein that made the trajectory's `[A]` the whole multimer while the reference's `[A]` was only the first chain — Prediction mode tolerated it (`O_system_rmst.txt` is frame-vs-first-frame RMSD), but Analysis mode aborted with `Numbers of CA atoms are not equal ...` **while still exiting 0**, so the pipeline reported success and `O_system_succ.txt`/the `sr_frame_*` CSV columns were silently empty.
 
-Both are documented: MobyWat manual §4.3.2 defines `–t [xy…]` precisely for when *"the target is stored in several chains"*, and §3.1.5.2 says the reference REMARK exists because *"ranges in the reference file may be different from those of the trajectory"* — so each spec is derived from the file it addresses, and the two need not be spelled the same. `mobywat_target_spec()` returns e.g. `[AB]` from a PDB's CA-bearing residues (waters and heterogens drop out; only the first `MODEL` is read). `-t` is quoted at the call sites, since `[AB]` would otherwise glob against files named `A` or `B`.
+Both are documented: MobyWat manual §4.3.2 defines `–t [xy…]` precisely for when *"the target is stored in several chains"*, and §3.1.5.2 says the reference REMARK exists because *"ranges in the reference file may be different from those of the trajectory"* — so each spec is derived from the file it addresses, and the two need not be spelled the same. `mobywat_target_spec()` returns e.g. `[AB]` from the chain IDs of a PDB's non-water atoms (`target_chain_ids()`; only the first `MODEL` is read) — the same set MobyWat's chain mode selects, and for a protein the same as its CA-bearing chains because `pdb-preprocessor.py` strips heterogens. An empty spec is a logged `ERROR` and a non-zero return (it used to be a silent `set -e` exit, and an empty `-t` segfaults MobyWat). `-t` is quoted at the call sites, since `[AB]` would otherwise glob against files named `A` or `B`.
 
 Single-chain PDBs still resolve to `[A]`, so their results are unchanged; multi-chain PDBs now validate against every chain's surface waters (16GS: 245 reference waters instead of 133), which makes their `sr_*` values **not comparable to rows recorded before this change**.
 
 Two things to know:
 
 - **`gromacs.sh: ensure_chain_labels()`** — `pdb2gmx` only assigns chain letters when the system has 2+ chains, so a **monomer comes out of `md.tpr` with a blank chain ID** that no `[xy...]` target can select. That is what the old unconditional `editconf -label A` was for: the manual's worked GROMACS recipe (§9.1.2.2, the source of this block) says a chain ID *"can be added"* that way, and GROMACS documents `-label` as *"Add chain label for **all residues**"* — a remedy for a missing ID, not something to apply always. It now runs only when the topology has no chain IDs.
-- **Nothing verifies that a MobyWat pass produced its outputs.** MobyWat exits 0 even when it aborts, so a run reports success either way and `O_system.log` is where the reason lives — note the Analysis pass overwrites that log, so only the last pass's copy survives. Without a reference MobyWat writes no `O_system_mt*.lst` at all, so empty `sr_*` columns are expected for a prediction-only run. The Analysis pass itself is a `MOBYWAT_DEBUG` extra and is non-fatal, so a finished MD + Prediction run is never discarded over it (`if …; then` bodies keep `errexit`, hence the invocation sits in the `if` condition). The pipeline assumes each run starts in a clean directory and is never resumed.
+- **MobyWat exit status.** The pipeline needs the patched MobyWat from https://github.com/bio-software/MobyWat (installed as `~/bin/mobywat`), which exits 1 on errors and accepts `MOBYWAT_RMS_ATOM`. The original 1.1 release exits 0 even when it aborts, so with it a run reports success either way and `O_system.log` is where the reason lives — note the Analysis pass overwrites that log, so only the last pass's copy survives. Without a reference MobyWat writes no `O_system_mt*.lst` at all, so empty `sr_*` columns are expected for a prediction-only run. The Analysis pass itself is a `MOBYWAT_DEBUG` extra and is non-fatal, so a finished MD + Prediction run is never discarded over it (`if …; then` bodies keep `errexit`, hence the invocation sits in the `if` condition). The pipeline assumes each run starts in a clean directory and is never resumed.
+
+### Nucleic acids (DNA/RNA)
+
+Tested end to end on 1VZK (B-DNA, 2 chains) and 483D (RNA, 1 chain) with both engines; details in `NUCLEIC-ACID-COMPATIBILITY.md`. What makes them work:
+
+- **Target chains** come from non-water atoms, not `CA` atoms (above).
+- **GROMACS fitting** (`confrms`, `trjconv -fit`) uses a named `Fit` group = protein `CA` + nucleic-acid `C4'`, written by `write_fit_index()` (`gmx select`) for `system_ref.pdb` and `md.tpr`; the old numeric group `3` is C-alpha for proteins but `SOL` for DNA/RNA. The fit is mandatory: `editconf -c -box 1000` moves the system ~5000 Å and MobyWat compares raw coordinates. The solute group for centring/clustering is the name `non-Water` (was numeric `1`; identical atoms for a protein). Temperature-coupling groups are `non-Water Water` (were `Protein non-Protein`, absent for DNA/RNA).
+- **RMSD atom**: both backends export `MOBYWAT_RMS_ATOM` from `mobywat_rms_atom()` — `CA` when the target has C-alphas, else `C4'`. `research.sh` skips `nan` rows of `O_system_rmst.txt`, so an RMSD MobyWat could not compute leaves `rmsd_avg`/`rmsd_max` empty instead of storing `-nan`.
 
 The pipeline auto-creates `.venv` in the repo root if absent, activates it, and uses it for all Python calls. All shell scripts use `set -euo pipefail`.
 
@@ -138,3 +146,9 @@ The pipeline auto-creates `.venv` in the repo root if absent, activates it, and 
 - Variable names: `SCREAMING_SNAKE_CASE` throughout.
 - Local variables declared with `local`.
 - All file paths validated before use with `require_file` or explicit `[[ -f ... ]]`.
+
+
+### Git rules
+
+- always write short git messages
+- never mention Cladue as co-author in commits

@@ -137,10 +137,10 @@ rvdw                = 333.3         ; Large cutoff for vacuum
 
 ; Temperature Coupling
 Tcoupl              = v-rescale
-tc-grps             = Protein non-Protein
+tc-grps             = non-Water Water   ; solute vs water: works for protein and nucleic-acid systems
 tau_t               = 0.1 0.1
 ref_t               = 300 300
-energygrps          = Protein non-Protein
+energygrps          = non-Water Water
 
 ; NO Pressure Coupling for vacuum simulation
 
@@ -185,12 +185,28 @@ EOF
 # pdb2gmx only assigns chain letters when the system has 2+ chains, so a monomer arrives with a blank chain ID that no [xy...] target can select. Label it A in that case only
 ensure_chain_labels() {
   local PDB="$1"
-  if [[ -n "$(protein_chain_ids "$PDB")" ]]; then
+  if [[ -n "$(target_chain_ids "$PDB")" ]]; then
     return 0
   fi
 
   log "No chain IDs in $PDB; labeling as chain A"
   gmx editconf -label A -f "$PDB" -o "$PDB"
+}
+
+# Index with two named groups for confrms / trjconv -fit: "System" (all atoms) and
+# "Fit" = protein C-alphas + nucleic-acid C4' atoms (one per residue in both, and
+# present on both sides of the fit). Replaces the default numeric group 3, which is
+# C-alpha only for proteins (for DNA/RNA it is SOL). MobyWat does no fitting itself,
+# so this fit is what puts the frames back into the reference's coordinate frame.
+FIT_SELECTION="\"System\" all; \"Fit\" name CA \"C4'\""
+write_fit_index() {
+  local STRUCTURE="$1"
+  local NDX="$2"
+  gmx select -s "$STRUCTURE" -on "$NDX" -select "$FIT_SELECTION"
+  if ! grep -q '^\[ Fit \]' "$NDX" || [[ "$(awk '/^\[ Fit \]/{f=1; next} /^\[/{f=0} f{n+=NF} END{print n+0}' "$NDX")" -eq 0 ]]; then
+    log "ERROR: no CA or C4' atoms to fit on in $STRUCTURE"
+    return 1
+  fi
 }
 
 write_runtime() {
@@ -272,7 +288,7 @@ EOF
 
   log "Step 6b: Running trjconv for compact system output"
   run_step gmx trjconv -f pbc_whole.xtc -s md.tpr -o system_compact.xtc -center -pbc mol -ur compact -boxcenter zero <<EOF
-1
+non-Water
 0
 EOF
 
@@ -286,7 +302,7 @@ else
 
   # center protein (group 1), compact, move box origin to zero, output System (group 0)
   run_step gmx trjconv -f after_cg.gro -s cg.tpr -o next_step.pdb -center -pbc mol -ur compact -boxcenter zero <<EOF
-1
+non-Water
 0
 EOF
 fi
@@ -324,30 +340,33 @@ if [[ -n "${REFERENCE_PDB:-}" ]]; then
 EOF
 
   run_step gmx trjconv -f pbc1.xtc -s md.tpr -o pbc2.xtc -pbc cluster << EOF
-1
+non-Water
 0
 EOF
 
   run_step gmx trjconv -f pbc2.xtc -s md.tpr -o pbc3.xtc -center -pbc mol -ur compact << EOF
-1
+non-Water
 0
 EOF
 
-  run_step gmx confrms -one -f1 system_ref.pdb -f2 md.tpr -o fit.pdb << EOF
-3
-3
+  run_step write_fit_index system_ref.pdb fit_ref.ndx
+  run_step write_fit_index md.tpr fit_tpr.ndx
+
+  run_step gmx confrms -one -f1 system_ref.pdb -n1 fit_ref.ndx -f2 md.tpr -n2 fit_tpr.ndx -o fit.pdb << EOF
+Fit
+Fit
 EOF
 
   run_step ensure_chain_labels fit.pdb
 
-  run_step gmx trjconv -f pbc3.xtc -s fit.pdb -o system.xtc -fit progressive << EOF
-3
-0
+  run_step gmx trjconv -f pbc3.xtc -s fit.pdb -n fit_tpr.ndx -o system.xtc -fit progressive << EOF
+Fit
+System
 EOF
 
-  run_step gmx trjconv -f pbc3.xtc -s fit.pdb -o system_tpy.pdb -b 0 -e 0 -fit progressive << EOF
-3
-0
+  run_step gmx trjconv -f pbc3.xtc -s fit.pdb -n fit_tpr.ndx -o system_tpy.pdb -b 0 -e 0 -fit progressive << EOF
+Fit
+System
 EOF
 
   log "REFERENCE_PDB is present and non-empty: $REFERENCE_PDB, VALIDATION MODE!"
@@ -371,23 +390,25 @@ else
 EOF
 
   run_step gmx trjconv -f pbc1.xtc -s md.tpr -o pbc2.xtc -pbc cluster << EOF
-1
+non-Water
 0
 EOF
 
   run_step gmx trjconv -f pbc2.xtc -s md.tpr -o pbc3.xtc -center -pbc mol -ur compact << EOF
-1
+non-Water
 0
 EOF
 
-  run_step gmx trjconv -f pbc3.xtc -s md.tpr -o system.xtc -fit progressive << EOF
-3
-0
+  run_step write_fit_index md.tpr fit_tpr.ndx
+
+  run_step gmx trjconv -f pbc3.xtc -s md.tpr -n fit_tpr.ndx -o system.xtc -fit progressive << EOF
+Fit
+System
 EOF
 
-  run_step gmx trjconv -f pbc3.xtc -s md.tpr -o system_tpy.pdb -b 0 -e 0 -fit progressive << EOF
-3
-0
+  run_step gmx trjconv -f pbc3.xtc -s md.tpr -n fit_tpr.ndx -o system_tpy.pdb -b 0 -e 0 -fit progressive << EOF
+Fit
+System
 EOF
 
   run_step ensure_chain_labels system_tpy.pdb
@@ -395,6 +416,10 @@ EOF
   MOBYWAT_TARGET="$(mobywat_target_spec system_tpy.pdb)"
   log "MobyWat target: trajectory $MOBYWAT_TARGET (prediction only)"
 fi
+
+# RMSD atom for O_system_rmst.txt: CA for proteins, C4' for DNA/RNA (patched MobyWat)
+export MOBYWAT_RMS_ATOM="$(mobywat_rms_atom system_tpy.pdb)"
+log "MOBYWAT_RMS_ATOM=$MOBYWAT_RMS_ATOM"
 
 run_step mobywat -t "$MOBYWAT_TARGET" -w Auto -n "1-$MOBYWAT_FRAMES" -mtol "$MOBYWAT_MTOL" -m Prediction -cls MER -v Diagnostic
 

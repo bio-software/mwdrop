@@ -429,10 +429,10 @@ rvdw                = 333.3         ; Large cutoff for vacuum
 
 ; Temperature Coupling
 Tcoupl              = v-rescale
-tc-grps             = Protein non-Protein
+tc-grps             = non-Water Water   ; solute vs water: works for protein and nucleic-acid systems
 tau_t               = 0.1 0.1
 ref_t               = 300 300
-energygrps          = Protein non-Protein
+energygrps          = non-Water Water
 
 ; NO Pressure Coupling for vacuum simulation
 

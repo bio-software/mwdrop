@@ -118,18 +118,18 @@ amber99.prm
 EOF
 log "Generated XYZ file: ${INPUT_DIR}/${PDB_NAME}.xyz"
 
-log "Step 4: Building key file with protein restraints (before minimization)"
+log "Step 4: Building key file with solute restraints (before minimization)"
 
-# Count protein atoms: all XYZ atoms before the first water (OW/HW).
+# Count solute atoms (protein, DNA or RNA): all XYZ atoms before the first water (OW/HW).
 PROTEIN_ATOMS=$(awk 'NR>1 && ($2=="OW" || $2=="HW") {print NR-2; exit}' \
   "${INPUT_DIR}/${PDB_NAME}.xyz")
 
 if [[ -z "$PROTEIN_ATOMS" || "$PROTEIN_ATOMS" -lt 1 ]]; then
-  log "ERROR: could not determine protein atom count from XYZ file"
+  log "ERROR: could not determine solute atom count from XYZ file"
   exit 1
 fi
 
-log "Protein atom count (heavy+H, before first water in XYZ): ${PROTEIN_ATOMS}"
+log "Solute atom count (heavy+H, before first water in XYZ): ${PROTEIN_ATOMS}"
 
 cat > "${INPUT_DIR}/minimize.key" <<EOF
 RESTRAIN-POSITION -1 ${PROTEIN_ATOMS} 2.0
@@ -141,9 +141,9 @@ EOF
 
 log "Generated minimize.key with: RESTRAIN-POSITION -1 ${PROTEIN_ATOMS} 2.0, OPENMP-THREADS 1, VDW-CUTOFF 9.0, CHARGE-CUTOFF 9.0"
 
-# 5) Minimization — pass minimze.key so protein restraints are active.
+# 5) Minimization — pass minimize.key so solute restraints are active.
 #    minimize9 reads PARAMETERS from the key file; stdin only needs the gradient criterion.
-log "Step 5: Running minimize (energy minimization with protein restraints)"
+log "Step 5: Running minimize (energy minimization with solute restraints)"
 run_step minimize "${INPUT_DIR}/${PDB_NAME}.xyz" -k "${INPUT_DIR}/minimize.key" <<EOF
 0.01
 EOF
@@ -322,6 +322,10 @@ else
   MOBYWAT_TARGET="$(mobywat_target_spec "${MOBYWAT_INPUT_PDB}")"
   log "MobyWat target: trajectory $MOBYWAT_TARGET (prediction only)"
 fi
+
+# RMSD atom for O_system_rmst.txt: CA for proteins, C4' for DNA/RNA (patched MobyWat)
+export MOBYWAT_RMS_ATOM="$(mobywat_rms_atom "${MOBYWAT_INPUT_PDB}")"
+log "MOBYWAT_RMS_ATOM=$MOBYWAT_RMS_ATOM"
 
 run_step mobywat "${MOBYWAT_ARGS[@]}" -t "$MOBYWAT_TARGET" -w Auto -n "1-$MOBYWAT_FRAMES" -mtol "$MOBYWAT_MTOL" -cls MER -m Prediction -v Diagnostic
 
