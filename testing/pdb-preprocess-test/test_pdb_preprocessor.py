@@ -7,7 +7,8 @@ atom (protein heavy atoms or waters). It:
   1. copies an input PDB to a scratch working copy,
   2. runs pdb-preprocessor.py (in --target or --reference mode) on the copy,
   3. matches every pre-existing atom in the input to its counterpart in the
-     output and compares coordinates,
+     output and compares coordinates (and, in --reference mode, B-factors:
+     MobyWat filters reference waters by B-factor, so they must survive),
   4. prints a report to STDOUT and exits non-zero if any real coordinate change
      is detected.
 
@@ -44,7 +45,7 @@ DEFAULT_PYTHON = os.path.join(REPO_ROOT, ".venv", "bin", "python")
 
 class Atom:
     __slots__ = ("record", "name", "alt_loc", "res_name",
-                 "chain_id", "res_seq", "i_code", "x", "y", "z", "raw")
+                 "chain_id", "res_seq", "i_code", "x", "y", "z", "b_factor", "raw")
 
     def __init__(self, line):
         self.record = line[0:6].strip()
@@ -57,6 +58,7 @@ class Atom:
         self.x = float(line[30:38])
         self.y = float(line[38:46])
         self.z = float(line[46:54])
+        self.b_factor = line[60:66].strip()
         self.raw = line.rstrip("\n")
 
     @property
@@ -195,6 +197,7 @@ def main():
     removed = []           # input atoms whose identity is absent from the output
     collapsed = []         # input atoms dropped by altLoc collapse (identity kept)
     water_moved = 0        # matched water atoms flagged as errors
+    b_changed = []         # (input atom, output atom), --reference mode only
 
     for atom in in_atoms:
         candidates = out_index.get(atom.match_key, [])
@@ -223,6 +226,9 @@ def main():
         out_atom = candidates[best_i]
         matched += 1
         max_delta = round(max(axis_deltas(atom, out_atom)), 3)
+        if mode_flag == "--reference" and atom.b_factor and \
+                float(atom.b_factor) != float(out_atom.b_factor or "nan"):
+            b_changed.append((atom, out_atom))
 
         if max_delta == 0.0:
             unchanged += 1
@@ -278,6 +284,15 @@ def main():
     print(f"      of which are waters that moved   : {water_moved}")
     print()
 
+    if mode_flag == "--reference":
+        print("B-factors of matched atoms (MobyWat's -bmax filter needs them)")
+        print(f"  changed                              : {len(b_changed)}")
+        for a, b in b_changed[:20]:
+            print(f"  [ERROR] B-FACTOR {a.label():<28} {a.b_factor} -> {b.b_factor or '(blank)'}")
+        if len(b_changed) > 20:
+            print(f"  ... {len(b_changed) - 20} more")
+        print()
+
     if warnings:
         print("Warnings (rounding-level coordinate changes, tolerated):")
         for a, b, d in warnings:
@@ -305,10 +320,11 @@ def main():
         print(f"  MODIFIED (preprocessed)    : {modified_kept}")
         print()
 
-    result_ok = len(errors) == 0 and model_reduction_ok
+    result_ok = len(errors) == 0 and model_reduction_ok and not b_changed
     print("=" * 68)
     print(f"RESULT: {'PASS' if result_ok else 'FAIL'}  "
-          f"({len(added)} added, {len(errors)} error(s), {len(warnings)} warning(s), "
+          f"({len(added)} added, {len(errors)} error(s), {len(b_changed)} B-factor change(s), "
+          f"{len(warnings)} warning(s), "
           f"models {in_eff}->{out_eff})")
     print("=" * 68)
 

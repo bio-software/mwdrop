@@ -34,6 +34,39 @@ def count_altloc_collapse(path):
     return positions, discarded
 
 
+def restore_b_factors(source_pdb, fixed_pdb):
+    """Copy B-factors from the input PDB into PDBFixer's output, in place.
+
+    OpenMM's PDBFile.writeFile writes every B-factor as 0.00. MobyWat counts a
+    reference water only if its B-factor is below its limit (-bmax, default 30),
+    so without this every crystal water would count. Atoms are matched by
+    (chain, resSeq, iCode, atom name), which keepIds=True preserves; for
+    alternate locations the first one listed in the input wins, as in PDBFixer.
+    Atoms PDBFixer added keep 0.00. Returns (restored, total) atom counts.
+    """
+    def key(line):
+        return (line[21], line[22:26], line[26], line[12:16].strip())
+
+    b_factors = {}
+    with open(source_pdb) as fh:
+        for line in fh:
+            if line.startswith(("ATOM  ", "HETATM")) and len(line) >= 66:
+                b_factors.setdefault(key(line), line[60:66])
+    restored = total = 0
+    with open(fixed_pdb) as fh:
+        lines = fh.readlines()
+    for i, line in enumerate(lines):
+        if line.startswith(("ATOM  ", "HETATM")):
+            total += 1
+            b_factor = b_factors.get(key(line))
+            if b_factor is not None:
+                lines[i] = line[:60] + b_factor + line[66:]
+                restored += 1
+    with open(fixed_pdb, "w") as fh:
+        fh.writelines(lines)
+    return restored, total
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Fix a PDB file (missing residues/atoms, nonstandard residues) in place."
@@ -106,10 +139,15 @@ def main():
             handle.flush()
             os.fsync(handle.fileno())
 
+        if keep_water:
+            b_restored, b_total = restore_b_factors(input_pdb, tmp_path)
+
         os.replace(tmp_path, input_pdb)
 
         if keep_water:
             print("[DONE] Waters kept; other heterogens removed.")
+            print(f"[DONE] B-factors restored from the input for {b_restored} of {b_total} atoms "
+                  f"(the rest were added by PDBFixer and keep 0.00).")
         else:
             print("[DONE] Waters and other heterogens removed.")
         print("[DONE] Missing heavy atoms and internal residues repaired where possible.")
