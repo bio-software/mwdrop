@@ -95,7 +95,7 @@ too**, or the suites stop measuring the shipped configuration.
 cd installer && ./install.sh
 ```
 
-Bootstraps: Python 3, pdbfixer (in `.venv`), GROMACS, Tinker, wdrop, MobyWat. Idempotent.
+Bootstraps: Python 3, pdbfixer (in `.venv`), GROMACS, Tinker, wdrop, MobyWat. Idempotent. `installer/mobywat/install.sh` clones the patched fork https://github.com/bio-software/MobyWat (not the mobywat.com 1.1 release), runs `make` and `make install` (→ `~/bin/mobywat`); `MOBYWAT_REF` selects the branch/tag/commit (default `main`). The main installer skips any `mobywat` already on `PATH`, so run the MobyWat installer directly to replace an original-release install.
 
 ## Code architecture
 

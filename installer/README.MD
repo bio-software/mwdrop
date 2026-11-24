@@ -37,6 +37,21 @@ installer skips components that are already installed, re-run the wdrop installe
 WDROP_REF=0.6 bash installer/wdrop/install.sh
 ```
 
+## mobywat
+
+MWDROP needs the patched MobyWat fork, [bio-software/MobyWat](https://github.com/bio-software/MobyWat), not the
+original 1.1 release from mobywat.com. The fork exits non-zero on errors, accepts `MOBYWAT_RMS_ATOM` and supports DNA/RNA
+targets. `mobywat/install.sh` clones it, builds it with `make` and installs it into `~/bin` with `make install`.
+
+By default it builds `main`. Set `MOBYWAT_REF` to build a specific branch, tag or commit instead. The main installer skips
+`mobywat` when any `mobywat` is already on the `PATH`, including the original release, so re-run the MobyWat installer
+directly to replace or update it:
+
+```bash
+bash installer/mobywat/install.sh
+MOBYWAT_REF=7495847 bash installer/mobywat/install.sh
+```
+
 ## Optional Tinker9-GPU install
 
 For non-technical users or standard laboratory PCs, we recommend Tinker CPU, which is installed automatically by our scripts. For users seeking enhanced molecular dynamics performance, we also provide an installer for `tinker9-gpu`, which can significantly improve MD performance. This option requires a modern, high-performance NVIDIA graphics card. We recommend installing this software manually from its official Git [repository](https://github.com/TinkerTools/tinker-gpu). An example installation script is provided, though it may require some adjustment due to its many components. The script can be found here: `installer/tinker/tinker-gpu-install.sh`

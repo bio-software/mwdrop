@@ -1,9 +1,14 @@
 #!/bin/bash
 set -e
 
-URL="http://mobywat.com/files/download/ver_11/mobywat.tgz"
+# MWDROP needs the patched MobyWat fork (exits non-zero on errors, accepts
+# MOBYWAT_RMS_ATOM, supports DNA/RNA targets), not the original 1.1 release
+# from mobywat.com. MOBYWAT_REF selects the branch, tag or commit to build
+# (default: main), e.g. MOBYWAT_REF=7495847 ./install.sh
+MOBYWAT_REPO="https://github.com/bio-software/MobyWat.git"
+MOBYWAT_REF="${MOBYWAT_REF:-main}"
 TMPDIR="$(mktemp -d /tmp/mobywat.XXXXXX)"
-ARCHIVE="$TMPDIR/mobywat.tgz"
+SRC_DIR="$TMPDIR/mobywat"
 
 cleanup() {
     rm -rf "$TMPDIR"
@@ -11,34 +16,24 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-echo "Downloading mobywat source..."
-if command -v curl >/dev/null 2>&1; then
-    curl -L "$URL" -o "$ARCHIVE"
-elif command -v wget >/dev/null 2>&1; then
-    wget -O "$ARCHIVE" "$URL"
-else
-    echo "Error: neither curl nor wget is installed."
+if ! command -v git >/dev/null 2>&1; then
+    echo "Error: git is not installed."
     exit 1
 fi
 
-echo "Extracting archive to $TMPDIR ..."
-tar -xzf "$ARCHIVE" -C "$TMPDIR"
+echo "Cloning MobyWat from $MOBYWAT_REPO ..."
+git clone --quiet "$MOBYWAT_REPO" "$SRC_DIR"
 
-echo "Locating src directory..."
-SRC_DIR="$(find "$TMPDIR" -type d -name src | head -n 1)"
+echo "Checking out $MOBYWAT_REF ..."
+git -C "$SRC_DIR" checkout --quiet "$MOBYWAT_REF"
 
-if [ -z "$SRC_DIR" ]; then
-    echo "Error: could not find src directory after extraction."
-    exit 1
-fi
+# Compiling MobyWat
+echo "Compiling MobyWat"
+make -C "$SRC_DIR/src"
 
-echo "Entering $SRC_DIR"
-cd "$SRC_DIR"
-
-echo "Running make..."
-make
-
-echo "Running make install..."
-make install
+# Installing MobyWat (make install copies into ~/bin, which must already be a directory)
+echo "Installing MobyWat"
+mkdir -p "$HOME/bin"
+make -C "$SRC_DIR/src" install
 
 echo "Installation completed."
