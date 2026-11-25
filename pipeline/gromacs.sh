@@ -210,7 +210,9 @@ write_fit_index() {
 }
 
 write_runtime() {
+  local RC="$?"
   local ELAPSED="$SECONDS"
+  report_unfinished_step "$RC"
   printf 'runtime for mm is %s seconds\n' "$ELAPSED" > "$TIMEFILE"
   log "Runtime written to $TIMEFILE: $ELAPSED seconds"
 }

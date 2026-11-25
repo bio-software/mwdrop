@@ -93,6 +93,7 @@ SECONDS=0
 TIMEFILE="${INPUT_DIR}/${PDB_NAME}-mm-process-time.txt"
 
 write_runtime() {
+  report_unfinished_step "$?"
   printf 'runtime for mm is %s seconds\n' "$SECONDS" > "$TIMEFILE"
   log "Runtime written to $TIMEFILE: $SECONDS seconds"
 }

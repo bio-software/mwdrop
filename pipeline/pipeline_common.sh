@@ -73,12 +73,79 @@ log() {
   fi
 }
 
+# run_step copies the command's stdout+stderr (still shown on the terminal) into
+# STEP_OUT_FILE, so that when it fails the error text lands in the log: gmx prints
+# its "Fatal error" on stderr, MobyWat its "ERROR!" on stdout, and neither used to
+# reach application.LOG. Under `set -e` a failing step kills the script inside
+# run_step, so that case is reported by report_unfinished_step from the scripts'
+# EXIT traps; a failure in a condition context (`if ! run_step ...`) is reported
+# here. The rc is deliberately not caught with `||`, which would switch errexit off
+# inside run_step'd shell functions.
+# stdout and stderr are kept apart (STEP_OUT_FILE{,.err}): a program's buffered
+# stdout is flushed after its unbuffered stderr at exit, so one merged tail can
+# miss the error (gmx's "Fatal error" block ends up ~15 lines from the end).
+STEP_OUT_FILE=""
+STEP_CMD=""
+STEP_FAILURE_TAIL_LINES=20
+# Printed (stderr) once a failing step's output has been logged, so an enclosing
+# run_step in the parent script (mwdrop.sh -> run_mm_step -> gromacs.sh) only
+# points at it instead of logging the same tail again.
+STEP_FAILURE_SENTINEL="[mwdrop] failing step output already logged above"
+
 run_step() {
   log "RUN: $*"
-  "$@"
+  STEP_CMD="$*"
+  STEP_OUT_FILE="$(mktemp "${TMPDIR:-/tmp}/mwdrop-step.XXXXXX")"
+  "$@" > >(tee "$STEP_OUT_FILE") 2> >(tee "$STEP_OUT_FILE.err" >&2)
   local rc=$?
+  if (( rc != 0 )); then
+    report_step_failure "$rc"
+    return "$rc"
+  fi
+  rm -f -- "$STEP_OUT_FILE" "$STEP_OUT_FILE.err"
+  STEP_OUT_FILE=""
+  STEP_CMD=""
   log "DONE (rc=$rc): $*"
   return "$rc"
+}
+
+# Log "FAILED (rc=N): <cmd>" and the last lines of the step's output.
+report_step_failure() {
+  local rc="$1"
+  local out="$STEP_OUT_FILE" cmd="$STEP_CMD"
+  STEP_OUT_FILE=""
+  STEP_CMD=""
+  log "FAILED (rc=$rc): $cmd"
+  [[ -n "$out" && -f "$out" ]] || return 0
+  sleep 0.3 # let the tee copies flush
+  if grep -qF "$STEP_FAILURE_SENTINEL" "$out.err" 2>/dev/null; then
+    log "(its output is logged above)"
+  else
+    local stream file text
+    for stream in stderr stdout; do
+      file="$out"; [[ "$stream" == stderr ]] && file="$out.err"
+      [[ -s "$file" ]] || continue
+      # mdrun -v redraws progress with \r: split those, cap very long lines
+      text="$(tr '\r' '\n' < "$file" | grep -v '^[[:space:]]*$' | tail -n "$STEP_FAILURE_TAIL_LINES" | cut -c1-300 | sed 's/^/  | /' || true)"
+      [[ -n "$text" ]] || continue
+      log "Last lines of its $stream:"
+      log "$text"
+    done
+    printf '%s\n' "$STEP_FAILURE_SENTINEL" >&2
+  fi
+  rm -f -- "$out" "$out.err"
+}
+
+# For EXIT traps: $1 = the script's exit status. Reports the step errexit killed
+# the script in, or a failure outside any run_step (which otherwise left no trace).
+report_unfinished_step() {
+  local rc="$1"
+  (( rc != 0 )) || return 0
+  if [[ -n "$STEP_OUT_FILE" ]]; then
+    report_step_failure "$rc"
+  else
+    log "FAILED (rc=$rc) outside a logged step; see the last lines above"
+  fi
 }
 
 # ============================================================================

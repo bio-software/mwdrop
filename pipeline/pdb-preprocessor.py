@@ -6,10 +6,95 @@ import tempfile
 
 try:
     from pdbfixer import PDBFixer
-    from openmm.app import PDBFile
+    from openmm.app import Modeller, PDBFile
 except ImportError:
     print("[WARNING] PDBFixer not installed; trying without it!", file=sys.stderr)
     sys.exit(0)
+
+# Standard nucleotide residue names (after PDBFixer's replaceNonstandardResidues).
+NUCLEOTIDE_RESNAMES = {"A", "C", "G", "U", "I", "DA", "DC", "DG", "DT", "DU", "DI"}
+
+# Phosphate atoms a 5'-terminal nucleotide may carry (OpenMM maps legacy names
+# such as O1P/O2P to OP1/OP2 on load).
+FIVE_PRIME_PHOSPHATE_ATOMS = {"P", "OP1", "OP2", "OP3"}
+
+
+def strip_five_prime_phosphates(fixer):
+    """Remove the phosphate group from the first nucleotide of every chain.
+
+    The AMBER force fields have no 5'-phosphate terminal residue: every 5'
+    building block (GROMACS rtp DA5/RU5/..., single-residue DAN/RUN/...) starts
+    at a 5'-OH, so pdb2gmx aborts with "Atom P in residue ... was not found in
+    rtp entry ..5" when a chain starts with its phosphate. Tinker's pdbxyz drops
+    those atoms silently; doing it here makes both engines see the same system.
+    OpenMM starts a new chain at every chain-ID change and at every TER record,
+    the same rule as pdb2gmx (-chainsep id_or_ter), so each strand is handled.
+    PDBFixer itself never adds P/OP1/OP2 to a 5' terminus, so nothing re-adds
+    them. Returns a list of "chain:resname resid" labels that were stripped.
+    """
+    to_delete = []
+    stripped = []
+    for chain in fixer.topology.chains():
+        residues = list(chain.residues())
+        if not residues or residues[0].name not in NUCLEOTIDE_RESNAMES:
+            continue
+        first = residues[0]
+        atoms = [a for a in first.atoms() if a.name in FIVE_PRIME_PHOSPHATE_ATOMS]
+        if atoms:
+            to_delete.extend(atoms)
+            stripped.append(f"{chain.id}:{first.name}{first.id}{first.insertionCode.strip()}")
+    if to_delete:
+        modeller = Modeller(fixer.topology, fixer.positions)
+        modeller.delete(to_delete)
+        fixer.topology = modeller.topology
+        fixer.positions = modeller.positions
+    return stripped
+
+
+DNA_TO_RNA = {"DA": "A", "DC": "C", "DG": "G", "DT": "U", "DU": "U"}
+RNA_TO_DNA = {"A": "DA", "C": "DC", "G": "DG", "U": "DT"}
+# Atoms the converted residue's template lacks; PDBFixer's addMissingAtoms then
+# builds the ones it needs (O2' for DNA->RNA, the thymine C7 for U->DT).
+RNA_ONLY_ATOMS = {"O2'", "HO2'"}
+DNA_TO_RNA_DROP = {"C7", "H71", "H72", "H73"}
+
+
+def unify_nucleic_chain_types(fixer):
+    """Make every nucleic-acid chain all-DNA or all-RNA.
+
+    pdb2gmx refuses a chain whose residues are not one type ("The residues in
+    the chain ... do not have a consistent type"). The usual cause is a modified
+    nucleotide whose MODRES parent is of the other type, e.g. 1J9H: RNA with
+    5-bromo-2'-deoxycytidine (CBR -> DC), which replaceNonstandardResidues turns
+    into a DC inside an RNA chain. Tinker's pdbxyz accepts the mix, GROMACS does
+    not. The minority residues are converted to the chain's majority type (a tie
+    is left as is: pdb2gmx then reports it). Call after
+    replaceNonstandardResidues and before findMissingAtoms. Returns a list of
+    "chain:OLD->NEW resid" labels.
+    """
+    converted = []
+    to_delete = []
+    for chain in fixer.topology.chains():
+        residues = list(chain.residues())
+        dna = [r for r in residues if r.name in DNA_TO_RNA]
+        rna = [r for r in residues if r.name in RNA_TO_DNA]
+        if not dna or not rna or len(dna) == len(rna):
+            continue
+        if len(rna) > len(dna):
+            minority, mapping, drop = dna, DNA_TO_RNA, DNA_TO_RNA_DROP
+        else:
+            minority, mapping, drop = rna, RNA_TO_DNA, RNA_ONLY_ATOMS
+        for res in minority:
+            new_name = mapping[res.name]
+            converted.append(f"{chain.id}:{res.name}->{new_name}{res.id}{res.insertionCode.strip()}")
+            res.name = new_name
+            to_delete.extend(a for a in res.atoms() if a.name in drop)
+    if to_delete:
+        modeller = Modeller(fixer.topology, fixer.positions)
+        modeller.delete(to_delete)
+        fixer.topology = modeller.topology
+        fixer.positions = modeller.positions
+    return converted
 
 
 def count_altloc_collapse(path):
@@ -127,12 +212,20 @@ def main():
         fixer.findNonstandardResidues()
         fixer.replaceNonstandardResidues()
 
+        # Target only (pdb2gmx needs single-type chains); before findMissingAtoms,
+        # which then adds the atoms the converted residues' templates need.
+        unified = [] if keep_water else unify_nucleic_chain_types(fixer)
+
         # Keep waters only in reference mode; always drop other heterogens
         fixer.removeHeterogens(keepWater=keep_water)
 
         # Add missing heavy atoms and residues
         fixer.findMissingAtoms()
         fixer.addMissingAtoms()
+
+        # Target only: the reference never goes through pdb2gmx/pdbxyz, and its
+        # 5' phosphates are not used (waters + the CA/C4' fit atoms are).
+        stripped_5p = [] if keep_water else strip_five_prime_phosphates(fixer)
 
         with open(tmp_path, "w") as handle:
             PDBFile.writeFile(fixer.topology, fixer.positions, handle, keepIds=True)
@@ -151,6 +244,12 @@ def main():
         else:
             print("[DONE] Waters and other heterogens removed.")
         print("[DONE] Missing heavy atoms and internal residues repaired where possible.")
+        if stripped_5p:
+            print(f"[DONE] Removed the 5'-terminal phosphate (no AMBER 5'-phosphate residue) "
+                  f"from: {', '.join(stripped_5p)}")
+        if unified:
+            print(f"[DONE] Converted nucleotides to their chain's majority type (DNA/RNA; "
+                  f"pdb2gmx needs single-type chains): {', '.join(unified)}")
         if alt_discarded:
             print(f"[DONE] Alternate conformers collapsed to a single conformer: "
                   f"kept 1 at each of {alt_positions} atom position(s), "

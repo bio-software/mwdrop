@@ -114,10 +114,15 @@ on_error() {
   local RC="$?"
   local LINE="${BASH_LINENO[0]:-$LINENO}"
   log "FAILED at line $LINE with exit code $RC"
+  FAILURE_LOGGED=1
   exit "$RC"
 }
 
+# ERR traps are not inherited by functions (no `set -E`), so a step failing inside
+# run_step / run_wdrop_and_mm exits through here without on_error: report it.
 on_exit() {
+  local RC="$?"
+  [[ -n "${FAILURE_LOGGED:-}" ]] || report_unfinished_step "$RC"
   log "Total runtime was $SECONDS seconds"
 }
 

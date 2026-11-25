@@ -9,8 +9,17 @@ atom (protein heavy atoms or waters). It:
   3. matches every pre-existing atom in the input to its counterpart in the
      output and compares coordinates (and, in --reference mode, B-factors:
      MobyWat filters reference waters by B-factor, so they must survive),
-  4. prints a report to STDOUT and exits non-zero if any real coordinate change
-     is detected.
+  4. in --target mode, checks that no chain still starts with a 5'-terminal
+     phosphate (AMBER has no such residue, so pdb2gmx would abort), that no
+     chain mixes DNA and RNA residues (pdb2gmx aborts on that too) and, with
+     --pdb2gmx, runs the pipeline's pdb2gmx command on the output,
+  5. prints a report to STDOUT and exits non-zero if any real coordinate change
+     (or a check above) fails.
+
+  Nucleic-acid fixture with 5' phosphates on both strands:
+     python test_pdb_preprocessor.py ../test_pdbs/463D.pdb --target --pdb2gmx
+  RNA with a modified deoxy-nucleotide (CBR -> DC inside RNA chains):
+     python test_pdb_preprocessor.py ../test_pdbs/1J9H.pdb --target --pdb2gmx
 
 Coordinate policy (PDB stores coordinates to 3 decimal places):
   * max per-axis |delta| == 0.000       -> unchanged
@@ -126,6 +135,85 @@ def run_preprocessor(python, script, mode_flag, pdb_path):
     return result.stdout + result.stderr
 
 
+NUCLEOTIDE_RESNAMES = {"A", "C", "G", "U", "I", "DA", "DC", "DG", "DT", "DU", "DI"}
+FIVE_PRIME_PHOSPHATE_ATOMS = {"P", "OP1", "OP2", "OP3", "O1P", "O2P", "O3P"}
+
+
+def five_prime_phosphates(path):
+    """Phosphate atoms still on the first nucleotide of a chain (first model).
+
+    A chain starts at a chain-ID change or after a TER record, the same rule as
+    pdb2gmx's default -chainsep id_or_ter. AMBER has no 5'-phosphate terminal
+    residue, so in --target mode any atom returned here makes pdb2gmx abort.
+    """
+    found = []
+    prev = None          # (chain, resSeq+iCode) of the previous ATOM/HETATM
+    after_ter = False
+    first = None         # (chain, resSeq+iCode) of the current chain's first residue
+    with open(path) as fh:
+        for line in fh:
+            if line.startswith("ENDMDL"):
+                break
+            if line.startswith("TER"):
+                after_ter = True
+                continue
+            if not line.startswith(("ATOM  ", "HETATM")):
+                continue
+            res = (line[21], line[22:27])
+            if prev is None or res[0] != prev[0] or (after_ter and res != prev):
+                first = res
+            after_ter = False
+            prev = res
+            if res == first and line[17:20].strip() in NUCLEOTIDE_RESNAMES \
+                    and line[12:16].strip() in FIVE_PRIME_PHOSPHATE_ATOMS:
+                found.append(Atom(line))
+    return found
+
+
+DNA_RESNAMES = {"DA", "DC", "DG", "DT", "DU"}
+RNA_RESNAMES = {"A", "C", "G", "U"}
+
+
+def mixed_type_chains(path):
+    """Chains (chain ID, split at TER like pdb2gmx) holding both DNA and RNA
+    residues, first model only. pdb2gmx aborts on them ("do not have a
+    consistent type"). Returns a list of "chain: DNA a, RNA b" labels."""
+    segments = []        # [chain id, {dna residues}, {rna residues}]
+    prev_chain = None
+    after_ter = False
+    with open(path) as fh:
+        for line in fh:
+            if line.startswith("ENDMDL"):
+                break
+            if line.startswith("TER"):
+                after_ter = True
+                continue
+            if not line.startswith(("ATOM  ", "HETATM")):
+                continue
+            chain = line[21]
+            if chain != prev_chain or after_ter:
+                segments.append([chain, set(), set()])
+            after_ter = False
+            prev_chain = chain
+            res, key = line[17:20].strip(), line[22:27]
+            if res in DNA_RESNAMES:
+                segments[-1][1].add(key)
+            elif res in RNA_RESNAMES:
+                segments[-1][2].add(key)
+    return [f"{c}: DNA {len(d)}, RNA {len(r)}" for c, d, r in segments if d and r]
+
+
+def run_pdb2gmx(pdb_path, work_dir):
+    """Run the pipeline's pdb2gmx command (gromacs.sh step 1) on pdb_path.
+    Returns (rc, last lines of output)."""
+    cmd = ["gmx", "pdb2gmx", "-water", "tip3p", "-ff", "amber99sb-ildn", "-ignh",
+           "-f", pdb_path, "-o", "conf.gro"]
+    print(f"[INFO] Running: {' '.join(cmd)}")
+    result = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True)
+    tail = "\n".join((result.stdout + result.stderr).splitlines()[-15:])
+    return result.returncode, tail
+
+
 def build_output_index(out_atoms):
     index = {}
     for atom in out_atoms:
@@ -151,6 +239,9 @@ def main():
                     help="keep copies next to the input for manual comparison: "
                          "<base>.ORIGINAL.pdb (untouched input) and "
                          "<base>.MODIFIED.pdb (preprocessor output)")
+    ap.add_argument("--pdb2gmx", action="store_true",
+                    help="--target mode only: also run the pipeline's gmx pdb2gmx command "
+                         "on the output and fail if it does not succeed")
     args = ap.parse_args()
 
     mode_flag = "--target" if args.target else "--reference"
@@ -167,6 +258,8 @@ def main():
 
     # Run the (in-place) preprocessor on a scratch copy.
     kept_paths = None
+    in_5p = five_prime_phosphates(input_pdb)
+    pdb2gmx = None       # (rc, output tail) when --pdb2gmx ran
     tmp_dir = tempfile.mkdtemp(prefix="pdb-preprocess-test.")
     work_copy = os.path.join(tmp_dir, os.path.basename(input_pdb))
     try:
@@ -174,6 +267,11 @@ def main():
         run_preprocessor(args.python, args.preprocessor, mode_flag, work_copy)
         out_atoms = parse_pdb(work_copy)
         out_models = count_models(work_copy)
+        out_5p = five_prime_phosphates(work_copy)
+        in_mixed = mixed_type_chains(input_pdb)
+        out_mixed = mixed_type_chains(work_copy)
+        if args.pdb2gmx and mode_flag == "--target":
+            pdb2gmx = run_pdb2gmx(work_copy, tmp_dir)
 
         if args.keep_output:
             base = os.path.splitext(os.path.basename(input_pdb))[0]
@@ -293,6 +391,37 @@ def main():
             print(f"  ... {len(b_changed) - 20} more")
         print()
 
+    # 5'-terminal phosphates: --target must strip them (no AMBER 5'-P residue);
+    # --reference keeps them (it never goes through pdb2gmx).
+    five_p_fail = mode_flag == "--target" and bool(out_5p)
+    print("5'-terminal phosphates (first nucleotide of each chain / TER segment)")
+    print(f"  in input                             : {len(in_5p)} atom(s)")
+    print(f"  in output                            : {len(out_5p)} atom(s)"
+          f"{' -> FAIL (pdb2gmx has no 5-prime-phosphate residue)' if five_p_fail else ''}")
+    for a in out_5p[:10] if five_p_fail else []:
+        print(f"  [ERROR] 5'-P LEFT {a.label()}")
+    print()
+
+    # Mixed DNA/RNA chains: --target must make each chain one type.
+    mixed_fail = mode_flag == "--target" and bool(out_mixed)
+    print("Chains mixing DNA and RNA residues (pdb2gmx needs one type per chain)")
+    print(f"  in input (raw residue names)         : {len(in_mixed)}")
+    print(f"  in output                            : {len(out_mixed)}"
+          f"{' -> FAIL' if mixed_fail else ''}")
+    for label in out_mixed[:10] if mixed_fail else []:
+        print(f"  [ERROR] MIXED CHAIN {label}")
+    print()
+
+    pdb2gmx_fail = False
+    if pdb2gmx is not None:
+        rc, tail = pdb2gmx
+        pdb2gmx_fail = rc != 0
+        print(f"pdb2gmx on the output                  : {'OK' if rc == 0 else f'FAIL (rc={rc})'}")
+        if pdb2gmx_fail:
+            for ln in tail.splitlines():
+                print(f"    | {ln}")
+        print()
+
     if warnings:
         print("Warnings (rounding-level coordinate changes, tolerated):")
         for a, b, d in warnings:
@@ -320,7 +449,8 @@ def main():
         print(f"  MODIFIED (preprocessed)    : {modified_kept}")
         print()
 
-    result_ok = len(errors) == 0 and model_reduction_ok and not b_changed
+    result_ok = (len(errors) == 0 and model_reduction_ok and not b_changed
+                 and not five_p_fail and not mixed_fail and not pdb2gmx_fail)
     print("=" * 68)
     print(f"RESULT: {'PASS' if result_ok else 'FAIL'}  "
           f"({len(added)} added, {len(errors)} error(s), {len(b_changed)} B-factor change(s), "

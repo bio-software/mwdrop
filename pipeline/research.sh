@@ -22,6 +22,8 @@
 #   sr_frame_min, sr_frame_max, sr_frame_avg, sr_frame_std,
 #   failure, run_timestamp, commit_hash, cpu, gpu,
 #   matches_mer, matches_ida, matches_ide, matches_pos, sr_denominator
+# A PDB with no crystal waters below MobyWat's B-factor limit (NMR or water-less
+# entries) is skipped with a WARNING before any combo runs, and gets no CSV row.
 # Metrics come from: total runtime (last "Total runtime was N seconds" line of
 # application.LOG), avg/max target RMSD (CA, or C4' for DNA/RNA) from O_system_rmst.txt, and the final SR
 # value from each O_system_mt{MER,IDa,IDe,POS}.lst. The sr_frame_* columns are the
@@ -97,6 +99,23 @@ COMBOS=(
   "gromacs --layers 5 --intermediate-md-ns 0 --final-md-ns 0.01"
   "tinker --layers 5 --intermediate-md-ns 0 --final-md-ns 0.01"
 )
+
+# MobyWat's B-factor limit (-bmax default): only reference waters below it count,
+# both in the SR denominator and as matches.
+MOBYWAT_BMAX=30
+
+# Number of crystal waters MobyWat can validate against: HOH/WAT/DOD/H2O records
+# with B < MOBYWAT_BMAX in the first model. 0 for NMR / water-less entries, which
+# MobyWat aborts on ("-w Auto defines zero atoms") after a full MD run.
+reference_water_count() {
+  awk -v bmax="$MOBYWAT_BMAX" '
+    /^ENDMDL/ { exit }
+    /^(ATOM|HETATM)/ {
+      res = substr($0, 18, 3); gsub(/ /, "", res)
+      if ((res == "HOH" || res == "WAT" || res == "DOD" || res == "H2O") && substr($0, 61, 6) + 0 < bmax) n++
+    }
+    END { print n + 0 }' "$1"
+}
 
 # MobyWat match tolerance (-mtol, Å) used for every combo: a predicted water counts
 # as a match when it lies within this distance of a reference water, so it drives
@@ -360,6 +379,16 @@ for SRC_PDB in "${PDB_FILES[@]}"; do
   mkdir -p "$PDB_ROOT"
 
   log "=== $PDBID ==="
+
+  # Validation needs crystal waters. Without any, every combo would run the whole
+  # pipeline and then fail in MobyWat, recording a failure row with a meaningless
+  # runtime — skip the PDB instead (no CSV row).
+  REF_WATERS="$(reference_water_count "$SRC_PDB")"
+  if (( REF_WATERS == 0 )); then
+    log "WARNING: skipping $PDBID: no crystal waters with B < $MOBYWAT_BMAX (NMR or water-less entry?); MobyWat has nothing to validate against. No CSV row written."
+    continue
+  fi
+  log "$PDBID: $REF_WATERS crystal waters with B < $MOBYWAT_BMAX"
 
   # Keep a pristine master copy that is NEVER fed to a run.
   ORIGINAL="$PDB_ROOT/$PDBID.original.pdb"
