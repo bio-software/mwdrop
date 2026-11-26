@@ -11,7 +11,8 @@ atom (protein heavy atoms or waters). It:
      MobyWat filters reference waters by B-factor, so they must survive),
   4. in --target mode, checks that no chain still starts with a 5'-terminal
      phosphate (AMBER has no such residue, so pdb2gmx would abort), that no
-     chain mixes DNA and RNA residues (pdb2gmx aborts on that too) and, with
+     chain mixes DNA and RNA residues (pdb2gmx aborts on that too), that the
+     force-field ions were kept (unless MWDROP_KEEP_IONS=0) and, with
      --pdb2gmx, runs the pipeline's pdb2gmx command on the output,
   5. prints a report to STDOUT and exits non-zero if any real coordinate change
      (or a check above) fails.
@@ -39,6 +40,10 @@ import tempfile
 
 # Water residue names we treat as waters when reporting movement.
 WATER_RESNAMES = {"HOH", "WAT", "H2O", "TIP3", "TIP", "SOL", "DOD"}
+
+# Monatomic ions --target keeps by default (mirrors FORCE_FIELD_IONS in
+# pipeline/pdb-preprocessor.py; MWDROP_KEEP_IONS=0 removes them instead).
+ION_RESNAMES = {"MG", "NA", "K", "CA", "ZN", "CL"}
 
 # A per-axis change of one unit in the 3rd decimal place (0.001 Angstrom) is
 # tolerated as rounding noise and reported as a warning; anything larger is an
@@ -75,11 +80,19 @@ class Atom:
         return self.res_name in WATER_RESNAMES
 
     @property
+    def is_ion(self):
+        return self.res_name in ION_RESNAMES
+
+    @property
     def match_key(self):
         # Identify a pre-existing atom independent of serial number (which the
         # preprocessor renumbers) and of resName (which replaceNonstandardResidues
         # may rewrite). altLoc is ignored so collapsed alternate conformers still
         # match; duplicates are resolved by nearest coordinate at compare time.
+        # Kept ions are moved to a chain of their own, so their chain ID is
+        # ignored (they still match by residue number + atom name).
+        if self.is_ion:
+            return ("ion", self.res_seq, self.i_code, self.name)
         return (self.chain_id, self.res_seq, self.i_code, self.name)
 
     def coords(self):
@@ -343,6 +356,8 @@ def main():
     waters_in = sum(1 for a in in_atoms if a.is_water)
     waters_removed = sum(1 for a in removed if a.is_water)
     hetero_removed = sum(1 for a in removed if not a.is_water)
+    ions_in = sum(1 for a in in_atoms if a.is_ion)
+    ions_removed = sum(1 for a in removed if a.is_ion)
     water_collapsed = sum(1 for a in collapsed if a.is_water)
     other_collapsed = sum(1 for a in collapsed if not a.is_water)
 
@@ -402,6 +417,16 @@ def main():
         print(f"  [ERROR] 5'-P LEFT {a.label()}")
     print()
 
+    # Crystal ions: --target keeps them unless MWDROP_KEEP_IONS=0 (the subprocess
+    # inherits this environment); their coordinates are checked like any atom's.
+    keep_ions = os.environ.get("MWDROP_KEEP_IONS", "1").strip().lower() not in ("0", "false", "no", "off")
+    ions_fail = mode_flag == "--target" and keep_ions and ions_removed > 0
+    print("Force-field ions (Mg, Na, K, Ca, Zn, Cl)")
+    print(f"  in input                             : {ions_in}")
+    print(f"  removed                              : {ions_removed}"
+          f"{' -> FAIL (--target keeps ions unless MWDROP_KEEP_IONS=0)' if ions_fail else ''}")
+    print()
+
     # Mixed DNA/RNA chains: --target must make each chain one type.
     mixed_fail = mode_flag == "--target" and bool(out_mixed)
     print("Chains mixing DNA and RNA residues (pdb2gmx needs one type per chain)")
@@ -450,7 +475,7 @@ def main():
         print()
 
     result_ok = (len(errors) == 0 and model_reduction_ok and not b_changed
-                 and not five_p_fail and not mixed_fail and not pdb2gmx_fail)
+                 and not five_p_fail and not mixed_fail and not ions_fail and not pdb2gmx_fail)
     print("=" * 68)
     print(f"RESULT: {'PASS' if result_ok else 'FAIL'}  "
           f"({len(added)} added, {len(errors)} error(s), {len(b_changed)} B-factor change(s), "

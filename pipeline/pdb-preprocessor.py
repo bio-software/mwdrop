@@ -6,7 +6,9 @@ import tempfile
 
 try:
     from pdbfixer import PDBFixer
-    from openmm.app import Modeller, PDBFile
+    from pdbfixer.pdbfixer import dnaResidues, proteinResidues, rnaResidues
+    from openmm.app import Modeller, PDBFile, Topology
+    from openmm.unit import nanometer
 except ImportError:
     print("[WARNING] PDBFixer not installed; trying without it!", file=sys.stderr)
     sys.exit(0)
@@ -17,6 +19,13 @@ NUCLEOTIDE_RESNAMES = {"A", "C", "G", "U", "I", "DA", "DC", "DG", "DT", "DU", "D
 # Phosphate atoms a 5'-terminal nucleotide may carry (OpenMM maps legacy names
 # such as O1P/O2P to OP1/OP2 on load).
 FIVE_PRIME_PHOSPHATE_ATOMS = {"P", "OP1", "OP2", "OP3"}
+
+# Monatomic ions kept in --target mode: the ones the force fields know by residue name
+# (GROMACS amber99sb-ildn aminoacids.rtp / ions.itp, Tinker amber99.prm biotypes).
+FORCE_FIELD_IONS = {"MG", "NA", "K", "CA", "ZN", "CL"}
+
+# Candidate chain IDs for the kept ions, tried in order; the first unused one wins.
+ION_CHAIN_ID_CANDIDATES = "ZYXWVUTSRQPONMLKJIHGFEDCBA0123456789"
 
 
 def strip_five_prime_phosphates(fixer):
@@ -97,6 +106,79 @@ def unify_nucleic_chain_types(fixer):
     return converted
 
 
+def keep_ions_enabled():
+    """Crystal ions are kept by default; MWDROP_KEEP_IONS=0 (or false/no/off) opts out."""
+    return os.environ.get("MWDROP_KEEP_IONS", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def remove_heterogens_except_ions(fixer):
+    """Remove waters and heterogens like PDBFixer.removeHeterogens(keepWater=False),
+    but keep the force-field ions (FORCE_FIELD_IONS).
+
+    Ions shape the hydration of nucleic acids in particular (a Mg2+ holds a shell of
+    six waters, phosphates are screened), so dropping them leaves those crystal
+    waters with nothing to reproduce them. Returns the kept ions as
+    "chain:resname+resSeq" labels.
+    """
+    keep = set(proteinResidues) | set(dnaResidues) | set(rnaResidues) | {"N", "UNK"} | FORCE_FIELD_IONS
+    to_delete = [r for r in fixer.topology.residues() if r.name not in keep]
+    kept_ions = [f"{r.chain.id}:{r.name}{r.id}" for r in fixer.topology.residues()
+                 if r.name in FORCE_FIELD_IONS]
+
+    modeller = Modeller(fixer.topology, fixer.positions)
+    modeller.delete(to_delete)
+    fixer.topology = modeller.topology
+    fixer.positions = modeller.positions
+    return kept_ions
+
+
+def move_ions_to_own_chain(fixer):
+    """Move every ion into one new chain at the end of the structure.
+
+    A crystal ion usually carries the chain ID of the molecule it binds and may be
+    written inside that chain, so pdb2gmx would see a chain mixing e.g. 'DNA' and
+    'Ion' residues and abort ("do not have a consistent type"). The topology is
+    rebuilt in the same atom order, except that the ions move to a trailing chain
+    with the first unused ID from ION_CHAIN_ID_CANDIDATES. Coordinates are copied
+    unchanged. Returns that chain ID, or None when there are no ions.
+    """
+    ions = [r for r in fixer.topology.residues() if r.name in FORCE_FIELD_IONS]
+    if not ions:
+        return None
+    used_ids = {chain.id for chain in fixer.topology.chains()}
+    ion_chain_id = next(c for c in ION_CHAIN_ID_CANDIDATES if c not in used_ids)
+
+    old_positions = fixer.positions.value_in_unit(nanometer)
+    new_topology = Topology()
+    new_topology.setPeriodicBoxVectors(fixer.topology.getPeriodicBoxVectors())
+    new_positions = []
+    new_atom_for = {}  # old atom -> new atom, to carry the bonds over
+
+    def copy_residue(residue, chain):
+        new_residue = new_topology.addResidue(residue.name, chain, residue.id, residue.insertionCode)
+        for atom in residue.atoms():
+            new_atom_for[atom] = new_topology.addAtom(atom.name, atom.element, new_residue, atom.id)
+            new_positions.append(old_positions[atom.index])
+
+    for chain in fixer.topology.chains():
+        residues = [r for r in chain.residues() if r.name not in FORCE_FIELD_IONS]
+        if residues:
+            new_chain = new_topology.addChain(chain.id)
+            for residue in residues:
+                copy_residue(residue, new_chain)
+
+    ion_chain = new_topology.addChain(ion_chain_id)
+    for residue in ions:
+        copy_residue(residue, ion_chain)
+
+    for atom1, atom2 in fixer.topology.bonds():
+        new_topology.addBond(new_atom_for[atom1], new_atom_for[atom2])
+
+    fixer.topology = new_topology
+    fixer.positions = new_positions * nanometer
+    return ion_chain_id
+
+
 def count_altloc_collapse(path):
     """Inspect the raw input for alternate-location conformers.
 
@@ -160,7 +242,8 @@ def parse_args():
     mode.add_argument(
         "--target",
         action="store_true",
-        help="Target PDB mode: remove existing waters and other heterogens.",
+        help="Target PDB mode: remove existing waters and other heterogens; force-field "
+             "ions (Mg, Na, K, Ca, Zn, Cl) are kept unless MWDROP_KEEP_IONS=0.",
     )
     mode.add_argument(
         "--reference",
@@ -216,8 +299,14 @@ def main():
         # which then adds the atoms the converted residues' templates need.
         unified = [] if keep_water else unify_nucleic_chain_types(fixer)
 
-        # Keep waters only in reference mode; always drop other heterogens
-        fixer.removeHeterogens(keepWater=keep_water)
+        # Reference: keep waters, drop all other heterogens. Target: drop waters and
+        # heterogens but keep the force-field ions, unless MWDROP_KEEP_IONS=0.
+        keep_ions = not keep_water and keep_ions_enabled()
+        kept_ions = []
+        if keep_ions:
+            kept_ions = remove_heterogens_except_ions(fixer)
+        else:
+            fixer.removeHeterogens(keepWater=keep_water)
 
         # Add missing heavy atoms and residues
         fixer.findMissingAtoms()
@@ -226,6 +315,9 @@ def main():
         # Target only: the reference never goes through pdb2gmx/pdbxyz, and its
         # 5' phosphates are not used (waters + the CA/C4' fit atoms are).
         stripped_5p = [] if keep_water else strip_five_prime_phosphates(fixer)
+
+        # Kept ions get their own trailing chain (pdb2gmx needs single-type chains).
+        ion_chain_id = move_ions_to_own_chain(fixer) if kept_ions else None
 
         with open(tmp_path, "w") as handle:
             PDBFile.writeFile(fixer.topology, fixer.positions, handle, keepIds=True)
@@ -242,11 +334,15 @@ def main():
             print(f"[DONE] B-factors restored from the input for {b_restored} of {b_total} atoms "
                   f"(the rest were added by PDBFixer and keep 0.00).")
         else:
-            print("[DONE] Waters and other heterogens removed.")
+            print("[DONE] Waters and other heterogens removed"
+                  f"{' (force-field ions kept)' if keep_ions else ''}.")
         print("[DONE] Missing heavy atoms and internal residues repaired where possible.")
         if stripped_5p:
             print(f"[DONE] Removed the 5'-terminal phosphate (no AMBER 5'-phosphate residue) "
                   f"from: {', '.join(stripped_5p)}")
+        if kept_ions:
+            print(f"[DONE] Kept {len(kept_ions)} crystal ion(s), moved to chain {ion_chain_id} "
+                  f"(set MWDROP_KEEP_IONS=0 to remove them): {', '.join(kept_ions)}")
         if unified:
             print(f"[DONE] Converted nucleotides to their chain's majority type (DNA/RNA; "
                   f"pdb2gmx needs single-type chains): {', '.join(unified)}")
