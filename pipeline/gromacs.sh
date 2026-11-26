@@ -198,7 +198,8 @@ ensure_chain_labels() {
 # present on both sides of the fit). Replaces the default numeric group 3, which is
 # C-alpha only for proteins (for DNA/RNA it is SOL). MobyWat does no fitting itself,
 # so this fit is what puts the frames back into the reference's coordinate frame.
-FIT_SELECTION="\"System\" all; \"Fit\" name CA \"C4'\""
+# "and not resname CA": a kept calcium ion (pdb-preprocessor.py --target) is also atom CA.
+FIT_SELECTION="\"System\" all; \"Fit\" (name CA and not resname CA) or name \"C4'\""
 write_fit_index() {
   local STRUCTURE="$1"
   local NDX="$2"
@@ -207,6 +208,58 @@ write_fit_index() {
     log "ERROR: no CA or C4' atoms to fit on in $STRUCTURE"
     return 1
   fi
+}
+
+## Ion masses for the crystal ions pdb-preprocessor.py keeps (opt out: MWDROP_KEEP_IONS=0)
+#
+# `gmx trjconv -s fit.pdb -fit` needs a mass for every atom. With a PDB as the structure
+# GROMACS looks masses up in atommass.dat by residue/atom name, and the default file lists
+# the ions only by element ("Mg", "Zn"), so a kept MG ion gets no mass and the fit aborts.
+# GROMACS reads a library file from the working directory before its own copy, so we
+# write a local atommass.dat = the default file + exact ion entries. The masses are the
+# default file's own element values; they only let the step run, since the fit itself
+# uses the CA / C4' "Fit" group.
+
+# Succeeds when the PDB contains an ion that needs an explicit atommass.dat entry
+# (K is left out: the default file already has a "K" entry).
+has_ions() {
+  local PDB="$1"
+  awk '/^(ATOM|HETATM)/ {
+         res = substr($0, 18, 3); gsub(/ /, "", res)
+         if (res ~ /^(MG|ZN|NA|CA|CL)$/) found = 1
+       }
+       END { exit !found }' "$PDB"
+}
+
+# Path of the atommass.dat shipped with the installed GROMACS.
+default_atommass_file() {
+  local GMX_PREFIX
+  GMX_PREFIX="$(gmx --version 2>/dev/null | awk -F': *' '/^Data prefix/ {print $2; exit}')"
+  printf '%s/top/atommass.dat' "${GMXDATA:-$GMX_PREFIX/share/gromacs}"
+}
+
+write_atommass_dat() {
+  local OUTFILE="$INPUT_DIR/atommass.dat"
+  local DEFAULT_FILE
+  DEFAULT_FILE="$(default_atommass_file)"
+  [[ -f "$DEFAULT_FILE" ]] || { log "ERROR: default atommass.dat not found: $DEFAULT_FILE"; return 1; }
+
+  cat "$DEFAULT_FILE" > "$OUTFILE"
+  cat >> "$OUTFILE" <<EOF
+; --- added by mwdrop gromacs.sh: kept crystal ions (residue name, atom name, mass) ---
+MG   MG   24.30500   ; magnesium
+ZN   ZN   65.39000   ; zinc
+NA   NA   22.98970   ; sodium
+CA   CA   40.07800   ; calcium (without this, atom CA would match carbon)
+CL   CL   35.45300   ; chloride
+EOF
+}
+
+ensure_ion_masses() {
+  local PDB="$1"
+  has_ions "$PDB" || return 0
+  write_atommass_dat
+  log "Wrote local atommass.dat with ion masses (ions present in $PDB)"
 }
 
 write_runtime() {
@@ -360,6 +413,7 @@ Fit
 EOF
 
   run_step ensure_chain_labels fit.pdb
+  run_step ensure_ion_masses fit.pdb
 
   run_step gmx trjconv -f pbc3.xtc -s fit.pdb -n fit_tpr.ndx -o system.xtc -fit progressive << EOF
 Fit
